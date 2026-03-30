@@ -26,6 +26,7 @@ export const sessionMiddleware = async (c: Context, next: Next) => {
 			sameSite: "Lax",
 			maxAge: env.SESSION_TTL,
 			path: "/",
+			domain: env.isProduction && env.COOKIE_DOMAIN ? env.COOKIE_DOMAIN : undefined,
 		});
 	}
 

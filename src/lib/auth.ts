@@ -10,6 +10,7 @@ export async function setSessionLogin(c: Context, token: string, remember: boole
         sameSite: "Lax",
         maxAge: remember ? 7 * 86400 : env.SESSION_TTL,
         path: "/",
+        domain: env.isProduction && env.COOKIE_DOMAIN ? env.COOKIE_DOMAIN : undefined,
     });
 
     // Siapkan session data persis seperti sebelumnya

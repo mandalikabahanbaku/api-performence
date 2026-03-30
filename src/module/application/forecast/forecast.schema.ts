@@ -8,6 +8,18 @@ export const RunForecastSchema = z.object({
     start_year: z.coerce.number().int().min(2000).max(2100),
     horizon: z.coerce.number().int().min(1).max(12).default(12),
     is_display: z.boolean().optional(),
+    model_used: z
+        .enum([
+            "SIMPLE_MOVING_AVERAGE",
+            "EXPONENTIAL_SMOOTHING",
+            "HOLT_WINTERS",
+            "LINEAR_REGRESSION",
+            "ARIMA",
+            "ENSEMBLE",
+            "AUTO",
+        ])
+        .default("LINEAR_REGRESSION")
+        .optional(),
 });
 
 // ─── Query ─────────────────────────────────────────────────────────────────────
@@ -61,7 +73,7 @@ export const UpdateManualForecastSchema = z.object({
     month: z.coerce.number().int().min(1).max(12),
     year: z.coerce.number().int().min(2000).max(2100),
     final_forecast: z.coerce.number().min(0).optional(),
-    ratio: z.coerce.number().optional(),
+    additional_ratio: z.coerce.number().optional(),
 });
 
 // ─── Types / DTOs ──────────────────────────────────────────────────────────────
@@ -95,15 +107,17 @@ export type ResponseForecastDTO = {
         status: string | null;
         is_current_month: boolean;
         is_actionable: boolean;
-        ratio: number;
+        additional_ratio: number;
+        system_ratio: number;
+        model_used: string | null;
         percentage_value: number | null;
     }>;
     safety_stock_summary: {
         safety_stock_quantity: number | null;
         safety_stock_ratio: number | null;
-        avg_forecast: number | null;
-        total_forecast: number | null;
-        total_demand: number | null;
+        mean_absolute_error: number | null;
+        z_value_used: number | null;
+        additional_ratio: number | null;
         last_updated: Date | null;
     } | null;
 };

@@ -41,6 +41,7 @@ export const env = cleanEnv(process.env, {
     // CSRF
     CSRF_COOKIE_NAME: str({}),
     CSRF_HEADER_NAME: str({}),
+    COOKIE_DOMAIN: str({ default: "" }),
 
     // CORS
     CORS_ORIGINS: array({ default: [] }),

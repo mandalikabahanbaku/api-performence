@@ -345,11 +345,10 @@ model ProductIssuance {
 }
 
 model ForecastPercentage {
-  id        Int        @id @default(autoincrement())
-  month     Int        @db.SmallInt
-  year      Int        @db.SmallInt
-  value     Decimal    @default(0) @db.Decimal(5, 2)
-  forecasts Forecast[]
+  id        Int      @id @default(autoincrement())
+  month     Int      @db.SmallInt
+  year      Int      @db.SmallInt
+  value     Decimal  @default(0) @db.Decimal(5, 2)
 
   @@unique([id, month, year])
   @@unique([month, year])
@@ -357,24 +356,38 @@ model ForecastPercentage {
 }
 
 model Forecast {
-  id                     Int                @id @default(autoincrement())
+  id                     Int            @id @default(autoincrement())
   product_id             Int
-  month                  Int                @db.SmallInt
-  year                   Int                @db.SmallInt
-  trend                  Trend              @default(STABLE)
-  status                 ForecastStatus     @default(DRAFT)
-  created_at             DateTime           @default(now())
-  updated_at             DateTime           @updatedAt
-  base_forecast          Decimal            @db.Decimal(18, 2)
-  final_forecast         Decimal            @db.Decimal(18, 2)
-  forecast_percentage_id Int
-  ratio                  Decimal?           @db.Decimal(5, 2)
-  forecast_percentage    ForecastPercentage @relation(fields: [forecast_percentage_id], references: [id])
-  product                Product            @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  month                  Int            @db.SmallInt
+  year                   Int            @db.SmallInt
+  trend                  Trend          @default(STABLE)
+  model_used             ForecastModel? @default(LINEAR_REGRESSION)
+  status                 ForecastStatus @default(DRAFT)
+  version                Int            @default(1)
+  is_latest              Boolean        @default(true)
+  created_at             DateTime       @default(now())
+  updated_at             DateTime       @updatedAt
+  absolute_error         Decimal?       @db.Decimal(18, 2)
+  base_forecast          Decimal        @db.Decimal(18, 2)
+  final_forecast         Decimal        @db.Decimal(18, 2)
+  adjusted_at            DateTime?
+  forecast_for           DateTime       @db.Date
+  generated_in           DateTime       @db.Date
+  is_actionable          Boolean        @default(false)
+  valid_from             DateTime?      @db.Date
+  additional_ratio       Decimal?       @db.Decimal(5, 2)
+  system_ratio           Decimal?       @db.Decimal(5, 2)
+  // Legacy: percentage-based fields (retained for backward compat, not used by LR engine)
+  forecast_percentage_id Int?
+  product                Product        @relation(fields: [product_id], references: [id], onDelete: Cascade)
 
-  @@unique([product_id, month, year])
+  @@unique([product_id, month, year, version])
   @@index([product_id])
   @@index([status])
+  @@index([is_latest])
+  @@index([is_actionable])
+  @@index([forecast_for])
+  @@index([generated_in])
   @@map("forecasts")
 }
 
@@ -384,12 +397,12 @@ model SafetyStock {
   year                  Int
   month                 Int
   created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+  mean_absolute_error   Decimal  @db.Decimal(18, 2)
   safety_stock_quantity Decimal  @db.Decimal(18, 2)
   safety_stock_ratio    Decimal  @db.Decimal(18, 2)
-  updated_at            DateTime @updatedAt
-  avg_forecast          Decimal  @db.Decimal(18, 2)
-  horizon               Int
-  total_forecast        Decimal  @db.Decimal(18, 2)
+  z_value_used          Decimal  @db.Decimal(6, 3)
+  additional_ratio      Decimal  @db.Decimal(18, 2)
   product               Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
 
   @@unique([product_id, month, year])

@@ -1,6 +1,6 @@
-# Mandalika ERP - API (Backend)
+# Performence ERP - API (Backend)
 
-Sistem Backend berbasis Node.js yang kuat, dirancang untuk mengelola logika bisnis inti Mandalika ERP. Dibangun dengan fokus pada kecepatan, keamanan, dan skalabilitas.
+Sistem Backend berbasis Node.js yang kuat, dirancang untuk mengelola logika bisnis inti Performence ERP. Dibangun dengan fokus pada kecepatan, keamanan, dan skalabilitas.
 
 ## 🚀 Teknologi Utama
 
@@ -54,4 +54,4 @@ Sistem Backend berbasis Node.js yang kuat, dirancang untuk mengelola logika bisn
 
 ---
 
-© 2026 Mandalika ERP.
+© 2026 Performence ERP.

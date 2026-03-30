@@ -140,13 +140,14 @@ export class RecomendationV2Service {
             WITH 
                 -- Pre-calculate product-level dynamic safety stock based on forecast horizon
                 prod_stats AS (
-                    SELECT 
+                    SELECT
                         f.product_id,
                         SUM(f.final_forecast) as total_forecast_horizon,
                         p.safety_percentage
                     FROM "forecasts" f
                     JOIN "products" p ON p.id = f.product_id
-                    WHERE (f.year * 12 + f.month) >= ${fcStart}
+                    WHERE f.is_latest = true
+                      AND (f.year * 12 + f.month) >= ${fcStart}
                       AND (f.year * 12 + f.month) <= ${fcEnd}
                     GROUP BY f.product_id, p.safety_percentage
                 ),
@@ -171,7 +172,7 @@ export class RecomendationV2Service {
                         ), 0) AS m1_forecast_needed
                     FROM "raw_materials" rm
                     JOIN "recipes" rec ON rec.raw_mat_id = rm.id AND rec.is_active = true
-                    JOIN "forecasts" f ON f.product_id = rec.product_id
+                    JOIN "forecasts" f ON f.product_id = rec.product_id AND f.is_latest = true
                     LEFT JOIN "unit_raw_materials" urm ON urm.id = rm.unit_id
                     JOIN "products" p ON p.id = f.product_id
                     LEFT JOIN "product_size" ps ON ps.id = p.size_id

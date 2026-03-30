@@ -6,8 +6,6 @@ import { logger as honoLogger } from "hono/logger";
 import { compress } from "hono/compress";
 import { timeout } from "hono/timeout";
 import { HTTPException } from "hono/http-exception";
-import * as crypto from "crypto";
-
 import { errorHandler } from "./middleware/error.handler.js";
 import { requestId } from "./middleware/request.js";
 import { sanitizer } from "./middleware/sanitizer.js";
@@ -24,7 +22,10 @@ import { routes } from "./module/route.js";
 import { ApiError } from "./lib/errors/api.error.js";
 import { setCookie } from "hono/cookie";
 import { ApiResponse } from "./lib/api.response.js";
+import { generateHexToken } from "./lib/index.js";
 import { getConnInfo } from "@hono/node-server/conninfo";
+
+const CSRF_TTL_SECONDS = 15 * 60;
 
 type Variables = {
     requestId: string;
@@ -154,13 +155,10 @@ app.get(
         }
 
         // 2. Generate CSRF token baru
-        const generateHexToken = (): string => {
-            return crypto.randomBytes(32).toString("hex");
-        };
         const csrfToken = generateHexToken();
 
         // 3. Simpan token di Redis
-        await redisClient.setex(`csrf:${sessionId}`, 15 * 60, csrfToken);
+        await redisClient.setex(`csrf:${sessionId}`, CSRF_TTL_SECONDS, csrfToken);
 
         logger.debug("CSRF token generated", { sessionId });
 
@@ -168,10 +166,10 @@ app.get(
         setCookie(c, env.CSRF_COOKIE_NAME, csrfToken, {
             httpOnly: false, // agar JS dapat membaca
             secure: env.isProduction,
-            sameSite: "Lax", // atau "Strict" jika perlu,
-            maxAge: 15 * 60, // sama dengan durasi session
+            sameSite: "Lax",
+            maxAge: CSRF_TTL_SECONDS,
             path: "/",
-            domain: env.isProduction ? ".mandalikaperfume.my.id" : undefined,
+            domain: env.isProduction && env.COOKIE_DOMAIN ? env.COOKIE_DOMAIN : undefined,
         });
 
         return ApiResponse.sendSuccess(c, { process: "success", token: csrfToken });
