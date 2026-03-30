@@ -1,0 +1,766 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model SuspiciousActivity {
+  ip         String   @db.VarChar(100)
+  user_agent String   @db.VarChar(255)
+  reason     String
+  created_at DateTime @default(now())
+  severity   String?  @db.VarChar(20)
+  id         String   @id @db.VarChar(255)
+
+  @@index([ip])
+  @@index([created_at])
+  @@map("suspicious_activities")
+}
+
+model LoggingActivity {
+  id          Int           @id @default(autoincrement())
+  email       String
+  activity    LogActivities
+  description String        @db.VarChar(255)
+  created_at  DateTime      @default(now())
+
+  @@index([email, activity])
+  @@index([email])
+  @@index([created_at])
+  @@map("logging_activities")
+}
+
+model Account {
+  id          String       @id @default(uuid())
+  email       String       @unique @db.VarChar(100)
+  password    String       @db.VarChar(100)
+  status      STATUS       @default(PENDING)
+  role        ROLE         @default(STAFF)
+  created_at  DateTime     @default(now())
+  updated_at  DateTime     @updatedAt
+  deleted_at  DateTime?
+  emailVerify EmailVerify?
+  user        User?
+
+  @@index([role])
+  @@index([email, status])
+  @@map("accounts")
+}
+
+model User {
+  id         String    @id @default(uuid())
+  account_id String    @unique
+  first_name String    @db.VarChar(100)
+  last_name  String?   @db.VarChar(100)
+  photo      String?
+  phone      String?
+  whatsapp   String?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+  addresses  Address[]
+  account    Account   @relation(fields: [account_id], references: [id], onDelete: Cascade)
+
+  @@index([first_name])
+  @@index([first_name, last_name])
+  @@index([deleted_at])
+  @@index([first_name, deleted_at])
+  @@map("users")
+}
+
+model EmailVerify {
+  id          Int        @id @default(autoincrement())
+  email       String     @unique @db.VarChar(100)
+  type        TYPE_EMAIL @default(REGISTER)
+  code        String     @db.VarChar(100)
+  created_at  DateTime   @default(now())
+  accepted_at DateTime?
+  expired_at  DateTime?
+  account     Account    @relation(fields: [email], references: [email], onDelete: Cascade)
+
+  @@index([email, accepted_at])
+  @@index([email, expired_at])
+  @@index([email, expired_at, accepted_at])
+  @@map("email_verifies")
+}
+
+model Address {
+  id           Int      @id @default(autoincrement())
+  name         String   @db.VarChar(100)
+  street       String
+  district     String   @db.VarChar(100)
+  sub_district String   @db.VarChar(100)
+  city         String   @db.VarChar(100)
+  province     String   @db.VarChar(100)
+  country      String   @db.VarChar(100)
+  postal_code  String   @db.VarChar(6)
+  notes        String?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+  user_id      String   @db.VarChar(100)
+  user         User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([id, user_id])
+  @@index([user_id, name])
+  @@map("addresses")
+}
+
+model Product {
+  id                      Int                 @id @default(autoincrement())
+  name                    String              @db.VarChar(100)
+  unit_id                 Int?
+  type_id                 Int?
+  code                    String              @unique @db.VarChar(100)
+  gender                  GENDER              @default(UNISEX)
+  status                  STATUS              @default(PENDING)
+  description             String?
+  z_value                 Decimal             @default(1.65) @db.Decimal(5, 2)
+  lead_time               Int                 @default(30)
+  review_period           Int                 @default(30)
+  created_at              DateTime            @default(now())
+  updated_at              DateTime            @updatedAt
+  deleted_at              DateTime?
+  distribution_percentage Decimal?            @default(0) @db.Decimal(5, 2)
+  safety_percentage       Decimal?            @default(0) @db.Decimal(5, 2)
+  size_id                 Int?
+  forecasts               Forecast[]
+  outlet_inventories      OutletInventory[]
+  product_inventories     ProductInventory[]
+  issuances               ProductIssuance[]
+  size                    ProductSize?        @relation(fields: [size_id], references: [id])
+  product_type            ProductType?        @relation(fields: [type_id], references: [id])
+  unit                    Unit?               @relation(fields: [unit_id], references: [id])
+  recipes                 Recipes[]
+  safety_stock            SafetyStock[]
+  stock_transfer_items    StockTransferItem[]
+
+  @@index([code])
+  @@index([type_id])
+  @@index([name])
+  @@index([status])
+  @@index([updated_at])
+  @@index([code, name, status])
+  @@map("products")
+}
+
+model ProductSize {
+  id       Int       @id @default(autoincrement())
+  size     Int       @unique
+  products Product[]
+
+  @@map("product_size")
+}
+
+model Unit {
+  id       Int       @id @default(autoincrement())
+  slug     String    @unique @db.VarChar(100)
+  name     String    @db.VarChar(100)
+  products Product[]
+
+  @@map("unit_of_materials")
+}
+
+model ProductType {
+  id       Int       @id @default(autoincrement())
+  slug     String    @unique @db.VarChar(100)
+  name     String    @db.VarChar(100)
+  products Product[]
+
+  @@map("product_types")
+}
+
+model RawMatCategories {
+  id         Int           @id @default(autoincrement())
+  name       String        @db.VarChar(255)
+  status     STATUS        @default(ACTIVE)
+  created_at DateTime      @default(now())
+  updated_at DateTime      @updatedAt
+  slug       String        @unique @db.VarChar(255)
+  raw_mat    RawMaterial[]
+
+  @@map("raw_mat_categories")
+}
+
+model UnitRawMaterial {
+  id           Int           @id @default(autoincrement())
+  slug         String        @unique @db.VarChar(100)
+  name         String        @db.VarChar(100)
+  raw_material RawMaterial[]
+
+  @@map("unit_raw_materials")
+}
+
+model RawMaterial {
+  id                      Int                     @id @default(autoincrement())
+  barcode                 String?                 @unique @db.VarChar(50)
+  name                    String                  @db.VarChar(255)
+  price                   Decimal                 @db.Decimal(18, 2)
+  min_buy                 Decimal?                @db.Decimal(18, 2)
+  min_stock               Decimal?                @db.Decimal(18, 2)
+  unit_id                 Int
+  raw_mat_categories_id   Int?
+  supplier_id             Int?
+  created_at              DateTime                @default(now())
+  deleted_at              DateTime?
+  updated_at              DateTime?               @updatedAt
+  lead_time               Int?
+  type                    MaterialType?
+  purchase_drafts         MaterialPurchaseDraft[]
+  rawmaterial_inventories RawMaterialInventory[]
+  open_pos                RawMaterialOpenPo[]
+  raw_mat_category        RawMatCategories?       @relation(fields: [raw_mat_categories_id], references: [id])
+  supplier                Supplier?               @relation(fields: [supplier_id], references: [id])
+  unit_raw_material       UnitRawMaterial         @relation(fields: [unit_id], references: [id], onDelete: Cascade)
+  recipes                 Recipes[]
+
+  @@map("raw_materials")
+}
+
+model ProductInventory {
+  id           Int       @id @default(autoincrement())
+  product_id   Int
+  warehouse_id Int
+  quantity     Decimal   @default(0) @db.Decimal(18, 2)
+  min_stock    Decimal?  @db.Decimal(18, 2)
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+  date         Int       @default(1)
+  month        Int       @default(1)
+  year         Int       @default(2024)
+  product      Product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  warehouse    Warehouse @relation(fields: [warehouse_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, warehouse_id, date, month, year])
+  @@index([product_id])
+  @@index([warehouse_id])
+  @@index([date, month, year])
+  @@map("product_inventories")
+}
+
+model RawMaterialInventory {
+  id              Int         @id @default(autoincrement())
+  raw_material_id Int
+  warehouse_id    Int
+  quantity        Decimal     @default(0) @db.Decimal(18, 2)
+  min_stock       Decimal?    @db.Decimal(18, 2)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+  date            Int         @default(1)
+  month           Int         @default(1)
+  year            Int         @default(2024)
+  raw_material    RawMaterial @relation(fields: [raw_material_id], references: [id], onDelete: Cascade)
+  warehouse       Warehouse   @relation(fields: [warehouse_id], references: [id], onDelete: Cascade)
+
+  @@unique([raw_material_id, warehouse_id, date, month, year])
+  @@index([raw_material_id])
+  @@index([warehouse_id])
+  @@index([date, month, year])
+  @@map("raw_material_inventories")
+}
+
+model Supplier {
+  id            Int           @id @default(autoincrement())
+  name          String        @db.VarChar(100)
+  addresses     String
+  country       String        @db.VarChar(100)
+  phone         String?       @unique @db.VarChar(20)
+  created_at    DateTime      @default(now())
+  updated_at    DateTime      @updatedAt
+  slug          String?       @unique
+  raw_materials RawMaterial[]
+
+  @@map("suppliers")
+}
+
+model Warehouse {
+  id                       Int                    @id @default(autoincrement())
+  code                     String?                @unique @db.VarChar(20)
+  name                     String                 @db.VarChar(100)
+  created_at               DateTime               @default(now())
+  updated_at               DateTime               @updatedAt
+  deleted_at               DateTime?
+  type                     WarehouseType          @default(FINISH_GOODS)
+  outlet_warehouses        OutletWarehouse[]
+  product_inventories      ProductInventory[]
+  raw_material_inventories RawMaterialInventory[]
+  transfers_as_source      StockTransfer[]        @relation("TransferFromWarehouse")
+  transfers_as_destination StockTransfer[]        @relation("TransferToWarehouse")
+  warehouse_address        WarehouseAddress?
+
+  @@index([name])
+  @@map("warehouses")
+}
+
+model Recipes {
+  id            Int         @id @default(autoincrement())
+  quantity      Decimal     @db.Decimal(18, 2)
+  product_id    Int
+  raw_mat_id    Int
+  description   String?
+  is_active     Boolean     @default(true)
+  version       Int         @default(1)
+  products      Product     @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  raw_materials RawMaterial @relation(fields: [raw_mat_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, raw_mat_id, version])
+  @@map("recipes")
+}
+
+model WarehouseAddress {
+  warehouse_id    Int       @id
+  street          String
+  district        String    @db.VarChar(100)
+  sub_district    String    @db.VarChar(100)
+  city            String    @db.VarChar(100)
+  province        String    @db.VarChar(100)
+  country         String    @db.VarChar(100)
+  postal_code     String    @db.VarChar(6)
+  notes           String?
+  url_google_maps String?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+  warehouse       Warehouse @relation(fields: [warehouse_id], references: [id])
+
+  @@map("warehouse_addresses")
+}
+
+model ProductIssuance {
+  id         Int          @id @default(autoincrement())
+  product_id Int
+  month      Int
+  year       Int
+  quantity   Decimal      @db.Decimal(18, 2)
+  created_at DateTime     @default(now())
+  updated_at DateTime     @updatedAt
+  type       IssuanceType @default(ALL)
+  product    Product      @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, year, month, type])
+  @@index([year, month])
+  @@map("product_issuances")
+}
+
+model ForecastPercentage {
+  id        Int        @id @default(autoincrement())
+  month     Int        @db.SmallInt
+  year      Int        @db.SmallInt
+  value     Decimal    @default(0) @db.Decimal(5, 2)
+  forecasts Forecast[]
+
+  @@unique([id, month, year])
+  @@unique([month, year])
+  @@map("forecasts_percentages")
+}
+
+model Forecast {
+  id                     Int                @id @default(autoincrement())
+  product_id             Int
+  month                  Int                @db.SmallInt
+  year                   Int                @db.SmallInt
+  trend                  Trend              @default(STABLE)
+  status                 ForecastStatus     @default(DRAFT)
+  created_at             DateTime           @default(now())
+  updated_at             DateTime           @updatedAt
+  base_forecast          Decimal            @db.Decimal(18, 2)
+  final_forecast         Decimal            @db.Decimal(18, 2)
+  forecast_percentage_id Int
+  ratio                  Decimal?           @db.Decimal(5, 2)
+  forecast_percentage    ForecastPercentage @relation(fields: [forecast_percentage_id], references: [id])
+  product                Product            @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, month, year])
+  @@index([product_id])
+  @@index([status])
+  @@map("forecasts")
+}
+
+model SafetyStock {
+  id                    Int      @id @default(autoincrement())
+  product_id            Int
+  year                  Int
+  month                 Int
+  created_at            DateTime @default(now())
+  safety_stock_quantity Decimal  @db.Decimal(18, 2)
+  safety_stock_ratio    Decimal  @db.Decimal(18, 2)
+  updated_at            DateTime @updatedAt
+  avg_forecast          Decimal  @db.Decimal(18, 2)
+  horizon               Int
+  total_forecast        Decimal  @db.Decimal(18, 2)
+  product               Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, month, year])
+  @@index([product_id])
+  @@map("safety_stock")
+}
+
+model MaterialPurchaseDraft {
+  id                   Int                  @id @default(autoincrement())
+  raw_mat_id           Int
+  month                Int
+  year                 Int
+  quantity             Decimal              @db.Decimal(18, 2)
+  created_at           DateTime             @default(now())
+  updated_at           DateTime             @updatedAt
+  open_po_id           Int?                 @unique
+  pic_id               String?
+  status               RecommendationStatus @default(DRAFT)
+  current_stock        Decimal              @default(0) @db.Decimal(18, 2)
+  horizon              Int                  @default(1)
+  safety_stock_x_resep Decimal              @default(0) @db.Decimal(18, 2)
+  stock_fg_x_resep     Decimal              @default(0) @db.Decimal(18, 2)
+  total_needed         Decimal              @default(0) @db.Decimal(18, 2)
+  open_po              RawMaterialOpenPo?   @relation(fields: [open_po_id], references: [id])
+  raw_material         RawMaterial          @relation(fields: [raw_mat_id], references: [id], onDelete: Cascade)
+
+  @@unique([raw_mat_id, month, year])
+  @@map("material_purchase_drafts")
+}
+
+model RawMaterialOpenPo {
+  id               Int                    @id @default(autoincrement())
+  raw_material_id  Int
+  po_number        String?                @db.VarChar(100)
+  quantity         Decimal                @db.Decimal(18, 2)
+  order_date       DateTime               @default(now())
+  expected_arrival DateTime?
+  status           String                 @default("OPEN") @db.VarChar(50)
+  created_at       DateTime               @default(now())
+  updated_at       DateTime               @updatedAt
+  purchase_draft   MaterialPurchaseDraft?
+  raw_material     RawMaterial            @relation(fields: [raw_material_id], references: [id], onDelete: Cascade)
+
+  @@index([raw_material_id, status])
+  @@map("raw_material_open_pos")
+}
+
+model Outlet {
+  id                       Int               @id @default(autoincrement())
+  name                     String            @db.VarChar(100)
+  code                     String            @unique @db.VarChar(20)
+  phone                    String?           @db.VarChar(20)
+  type                     OutletType        @default(RETAIL)
+  pos_enabled              Boolean           @default(false)
+  created_at               DateTime          @default(now())
+  updated_at               DateTime          @updatedAt
+  deleted_at               DateTime?
+  address                  OutletAddress?
+  inventories              OutletInventory[]
+  warehouses               OutletWarehouse[]
+  transfers_as_source      StockTransfer[]   @relation("TransferFromOutlet")
+  transfers_as_destination StockTransfer[]   @relation("TransferToOutlet")
+
+  @@index([code])
+  @@index([type])
+  @@map("outlets")
+}
+
+model OutletWarehouse {
+  id           Int       @id @default(autoincrement())
+  outlet_id    Int
+  warehouse_id Int
+  priority     Int       @default(1)
+  created_at   DateTime  @default(now())
+  outlet       Outlet    @relation(fields: [outlet_id], references: [id], onDelete: Cascade)
+  warehouse    Warehouse @relation(fields: [warehouse_id], references: [id], onDelete: Cascade)
+
+  @@unique([outlet_id, warehouse_id])
+  @@index([outlet_id])
+  @@index([warehouse_id])
+  @@map("outlet_warehouses")
+}
+
+model OutletAddress {
+  outlet_id       Int      @id
+  street          String?
+  district        String?   @db.VarChar(100)
+  sub_district    String?   @db.VarChar(100)
+  city            String?   @db.VarChar(100)
+  province        String?   @db.VarChar(100)
+  country         String?   @db.VarChar(100)
+  postal_code     String?   @db.VarChar(6)
+  notes           String?
+  url_google_maps String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+  outlet          Outlet   @relation(fields: [outlet_id], references: [id], onDelete: Cascade)
+
+  @@map("outlet_addresses")
+}
+
+model OutletInventory {
+  id         Int      @id @default(autoincrement())
+  outlet_id  Int
+  product_id Int
+  quantity   Decimal  @default(0) @db.Decimal(18, 2)
+  min_stock  Decimal? @db.Decimal(18, 2)
+  updated_at DateTime @updatedAt
+  outlet     Outlet   @relation(fields: [outlet_id], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@unique([outlet_id, product_id])
+  @@index([outlet_id])
+  @@index([product_id])
+  @@map("outlet_inventories")
+}
+
+model StockMovement {
+  id             Int                  @id @default(autoincrement())
+  entity_type    MovementEntityType
+  entity_id      Int
+  location_type  MovementLocationType
+  location_id    Int
+  movement_type  MovementType
+  quantity       Decimal              @db.Decimal(18, 2)
+  qty_before     Decimal              @db.Decimal(18, 2)
+  qty_after      Decimal              @db.Decimal(18, 2)
+  reference_id   Int?
+  reference_type MovementRefType?
+  notes          String?
+  created_by     String?              @db.VarChar(100)
+  created_at     DateTime             @default(now())
+
+  @@index([entity_type, entity_id])
+  @@index([location_type, location_id])
+  @@index([movement_type])
+  @@index([reference_type, reference_id])
+  @@index([created_at])
+  @@map("stock_movements")
+}
+
+model StockTransfer {
+  id                Int                  @id @default(autoincrement())
+  transfer_number   String               @unique @db.VarChar(50)
+  from_type         TransferLocationType
+  from_warehouse_id Int?
+  from_outlet_id    Int?
+  to_type           TransferLocationType
+  to_warehouse_id   Int?
+  to_outlet_id      Int?
+  status            TransferStatus       @default(PENDING)
+  notes             String?
+  shipment_notes    String?
+  fulfillment_notes String?
+  created_by        String               @db.VarChar(100)
+  approved_by       String?              @db.VarChar(100)
+  approved_at       DateTime?
+  shipped_at        DateTime?
+  received_at       DateTime?
+  fulfilled_at      DateTime?
+  created_at        DateTime             @default(now())
+  updated_at        DateTime             @updatedAt
+  barcode           String               @unique @db.VarChar(20)
+  received_notes    String?
+  items             StockTransferItem[]
+  photos            StockTransferPhoto[]
+  from_outlet       Outlet?              @relation("TransferFromOutlet", fields: [from_outlet_id], references: [id])
+  from_warehouse    Warehouse?           @relation("TransferFromWarehouse", fields: [from_warehouse_id], references: [id])
+  to_outlet         Outlet?              @relation("TransferToOutlet", fields: [to_outlet_id], references: [id])
+  to_warehouse      Warehouse?           @relation("TransferToWarehouse", fields: [to_warehouse_id], references: [id])
+
+  @@index([barcode])
+  @@index([status])
+  @@index([from_type, from_warehouse_id])
+  @@index([from_type, from_outlet_id])
+  @@index([to_type, to_warehouse_id])
+  @@index([to_type, to_outlet_id])
+  @@index([created_at])
+  @@map("stock_transfers")
+}
+
+model StockTransferItem {
+  id                 Int           @id @default(autoincrement())
+  transfer_id        Int
+  product_id         Int
+  quantity_requested Decimal       @db.Decimal(18, 2)
+  quantity_packed    Decimal?      @db.Decimal(18, 2)
+  quantity_received  Decimal?      @db.Decimal(18, 2)
+  quantity_fulfilled Decimal?      @db.Decimal(18, 2)
+  quantity_missing   Decimal?      @db.Decimal(18, 2)
+  quantity_rejected  Decimal?      @db.Decimal(18, 2)
+  notes              String?
+  product            Product       @relation(fields: [product_id], references: [id])
+  transfer           StockTransfer @relation(fields: [transfer_id], references: [id], onDelete: Cascade)
+
+  @@index([transfer_id])
+  @@index([product_id])
+  @@map("stock_transfer_items")
+}
+
+model StockTransferPhoto {
+  id          Int                @id @default(autoincrement())
+  transfer_id Int
+  stage       TransferPhotoStage
+  url         String
+  caption     String?            @db.VarChar(255)
+  uploaded_by String             @db.VarChar(100)
+  created_at  DateTime           @default(now())
+  transfer    StockTransfer      @relation(fields: [transfer_id], references: [id], onDelete: Cascade)
+
+  @@index([transfer_id, stage])
+  @@map("stock_transfer_photos")
+}
+
+enum IssuanceType {
+  ALL
+  OFFLINE
+  ONLINE
+  SPIN_WHEEL
+  GARANSI_OUT
+}
+
+enum WarehouseType {
+  FINISH_GOODS
+  RAW_MATERIAL
+}
+
+enum OutletType {
+  RETAIL
+  MARKETPLACE
+}
+
+enum LEVEL_APP {
+  STANDAR
+  SINGLE
+  BUSINESS
+  ENTERPRISE
+  FULL
+}
+
+enum LogActivities {
+  CREATE
+  UPDATE
+  DELETE
+  CLEAN
+}
+
+enum SOSMED {
+  facebook
+  twitter
+  instagram
+  linkedin
+  youtube
+  tiktok
+  whatsapp
+}
+
+enum ROLE {
+  STAFF
+  SUPER_ADMIN
+  OWNER
+  DEVELOPER
+}
+
+enum TYPE_EMAIL {
+  REGISTER
+  RESET_PASSWORD
+}
+
+enum GENDER {
+  WOMEN
+  MEN
+  UNISEX
+}
+
+enum ForecastStatus {
+  DRAFT
+  FINALIZED
+  ADJUSTED
+}
+
+enum ForecastModel {
+  SIMPLE_MOVING_AVERAGE
+  EXPONENTIAL_SMOOTHING
+  HOLT_WINTERS
+  LINEAR_REGRESSION
+  ARIMA
+  ENSEMBLE
+  AUTO
+}
+
+enum Trend {
+  UP
+  DOWN
+  STABLE
+}
+
+enum MaterialType {
+  FO
+  PCKG
+}
+
+enum StatusProduction {
+  PENDING
+  PROCESSING
+  FINISH
+}
+
+enum STATUS {
+  PENDING
+  ACTIVE
+  FAVOURITE
+  BLOCK
+  DELETE
+}
+
+enum RecommendationStatus {
+  DRAFT
+  ACC
+  REJECTED
+}
+
+enum TransferLocationType {
+  WAREHOUSE
+  OUTLET
+}
+
+enum TransferStatus {
+  PENDING
+  APPROVED
+  SHIPMENT
+  RECEIVED
+  FULFILLMENT
+  COMPLETED
+  PARTIAL
+  MISSING
+  REJECTED
+  CANCELLED
+}
+
+enum MovementEntityType {
+  PRODUCT
+  RAW_MATERIAL
+}
+
+enum MovementLocationType {
+  WAREHOUSE
+  OUTLET
+}
+
+enum MovementType {
+  IN
+  OUT
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT
+  OPNAME
+  INITIAL
+  POS_SALE
+}
+
+enum MovementRefType {
+  PURCHASE_ORDER
+  STOCK_TRANSFER
+  STOCK_ADJUSTMENT
+  ISSUANCE_TRANSACTION
+  MANUAL
+}
+
+enum TransferPhotoStage {
+  SHIPMENT
+  RECEIVED
+  FULFILLMENT
+}

@@ -1,0 +1,29 @@
+{
+    "compilerOptions": {
+        /* Runtime & Language */
+        "target": "ES2022",
+        "lib": ["ES2022", "DOM"],
+        "module": "nodenext",
+        "moduleResolution": "NodeNext",
+
+        /* Strictness */
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "useUnknownInCatchVariables": true,
+
+        /* Interop */
+        "esModuleInterop": true,
+        "allowSyntheticDefaultImports": true,
+
+        /* Emit */
+        "outDir": "dist",
+        "sourceMap": true,
+
+        /* Safety */
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": ["src", "prisma"],
+
+    "exclude": ["node_modules", "dist"]
+}

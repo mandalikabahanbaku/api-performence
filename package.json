@@ -1,0 +1,40 @@
+{
+    "name": "api",
+    "type": "module",
+    "private": true,
+    "scripts": {
+        "dev": "tsx watch src/server.ts",
+        "build": "tsc",
+        "start": "node dist/src/server.js",
+        "test": "vitest run"
+    },
+    "dependencies": {
+        "@hono/node-server": "^1.19.7",
+        "@prisma/adapter-pg": "^7.2.0",
+        "@prisma/client": "^6.19.2",
+        "bcrypt": "^6.0.0",
+        "csv-parse": "^6.1.0",
+        "dotenv": "^17.2.3",
+        "envalid": "^8.1.1",
+        "exceljs": "^4.4.0",
+        "hono": "^4.11.3",
+        "ioredis": "^5.8.2",
+        "node-cron": "^4.2.1",
+        "pg": "^8.16.3",
+        "slugify": "^1.6.6",
+        "uuid": "^13.0.0",
+        "validator": "^13.15.26",
+        "winston": "^3.19.0",
+        "zod": "^4.3.4"
+    },
+    "devDependencies": {
+        "@types/bcrypt": "^6.0.0",
+        "@types/node": "^25.3.5",
+        "@types/pg": "^8.16.0",
+        "@types/validator": "^13.15.10",
+        "prisma": "^6.19.2",
+        "tsx": "^4.21.0",
+        "typescript": "^5.9.3",
+        "vitest": "^4.0.18"
+    }
+}

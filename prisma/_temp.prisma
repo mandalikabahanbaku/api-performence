@@ -1,0 +1,360 @@
+
+// model WebsiteSettings {
+//   id                    Int      @id @default(autoincrement())
+//   company_id            String   @unique
+//   website_title         String   @db.VarChar(255)
+//   website_url           String   @db.VarChar(255)
+//   maintenance_mode      Boolean  @default(false)
+//   google_analytics_id   String?  @db.VarChar(20)
+//   google_tag_manager_id String?  @db.VarChar(20)
+//   created_at            DateTime @default(now())
+//   updated_at            DateTime @updatedAt
+//   // company               Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+//   @@map("website_settings")
+// }
+
+// model Company {
+//   id                  String               @id @default(cuid()) @db.VarChar(100)
+//   name                String               @db.VarChar(100)
+//   legal_name          String?              @db.VarChar(100)
+//   description         String?
+//   logo                String?
+//   established_at      DateTime
+//   company_addresses   CompanyAddress[]
+//   social_media        SocialMedia[]
+//   website_settings    WebsiteSettings?
+
+//   @@map("companies")
+// }
+
+// model CompanyAddress {
+//   id              Int      @id @default(autoincrement())
+//   name            String   @db.VarChar(100)
+//   street          String
+//   district        String   @db.VarChar(100)
+//   sub_district    String   @db.VarChar(100)
+//   city            String   @db.VarChar(100)
+//   province        String   @db.VarChar(100)
+//   country         String   @db.VarChar(100)
+//   postal_code     String   @db.VarChar(6)
+//   notes           String?
+//   url_google_maps String?
+//   created_at      DateTime @default(now())
+//   updated_at      DateTime @updatedAt
+//   company_id      String   @db.VarChar(100)
+//   company         Company  @relation(fields: [company_id], references: [id])
+
+//   @@unique([id, company_id])
+//   @@index([company_id, name])
+//   @@map("company_addresses")
+// }
+
+// model SocialMedia {
+//   id         Int      @id @default(autoincrement())
+//   company_id String
+//   platform   SOSMED   @default(facebook)
+//   url        String   @db.VarChar(255)
+//   is_active  Boolean  @default(true)
+//   created_at DateTime @default(now())
+//   updated_at DateTime @updatedAt
+//   company    Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+//   @@map("social_media")
+// }
+
+
+// model SalesActual {
+//   id         Int      @id @default(autoincrement())
+//   product_id Int
+//   month      Int
+//   year       Int
+//   quantity   Decimal  @db.Decimal(18, 2)
+//   created_at DateTime @default(now())
+//   updated_at DateTime @updatedAt
+//   product    Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+//   @@unique([product_id, year, month])
+//   @@index([year, month])
+//   @@map("sales_actuals")
+// }
+
+// model Forecast {
+//   id               Int            @id @default(autoincrement())
+//   product_id       Int
+//   month            Int            @db.SmallInt
+//   year             Int            @db.SmallInt
+//   trend            Trend          @default(STABLE)
+//   model_used       ForecastModel? @default(AUTO)
+//   status           ForecastStatus @default(DRAFT)
+//   version          Int            @default(1)
+//   is_latest        Boolean        @default(true)
+//   created_at       DateTime       @default(now())
+//   updated_at       DateTime       @updatedAt
+//   absolute_error   Decimal?       @db.Decimal(18, 2)
+//   base_forecast    Decimal        @db.Decimal(18, 2)
+//   final_forecast   Decimal        @db.Decimal(18, 2)
+//   adjusted_at      DateTime?
+//   forecast_for     DateTime       @db.Date
+//   generated_in     DateTime       @db.Date
+//   is_actionable    Boolean        @default(false)
+//   valid_from       DateTime?      @db.Date
+//   additional_ratio Decimal?       @db.Decimal(5, 2)
+//   system_ratio     Decimal?       @db.Decimal(5, 2)
+//   product          Product        @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+//   @@unique([product_id, month, year, version])
+//   @@index([product_id])
+//   @@index([status])
+//   @@index([is_actionable])
+//   @@index([forecast_for])
+//   @@index([generated_in])
+//   @@map("forecasts")
+// }
+
+// model SafetyStock {
+//   id                    Int      @id @default(autoincrement())
+//   product_id            Int
+//   year                  Int
+//   month                 Int
+//   created_at            DateTime @default(now())
+//   mean_absolute_error   Decimal  @db.Decimal(18, 2)
+//   safety_stock_quantity Decimal  @db.Decimal(18, 2)
+//   safety_stock_ratio    Decimal  @db.Decimal(18, 2)
+//   updated_at            DateTime @updatedAt
+//   z_value_used          Decimal  @db.Decimal(6, 3)
+//   additional_ratio      Decimal  @db.Decimal(18, 2)
+//   product               Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+//   @@unique([product_id, month, year])
+//   @@index([product_id])
+//   @@map("safety_stock")
+// }
+
+// model RawMatCategories {
+//   id         Int           @id @default(autoincrement())
+//   name       String        @db.VarChar(255)
+//   status     STATUS        @default(ACTIVE)
+//   created_at DateTime      @default(now())
+//   updated_at DateTime      @updatedAt
+//   slug       String        @unique @db.VarChar(255)
+//   raw_mat    RawMaterial[]
+
+//   @@map("raw_mat_categories")
+// }
+
+// model UnitRawMaterial {
+//   id           Int           @id @default(autoincrement())
+//   slug         String        @unique @db.VarChar(100)
+//   name         String        @db.VarChar(100)
+//   raw_material RawMaterial[]
+
+//   @@map("unit_raw_materials")
+// }
+
+// model RawMaterial {
+//   id                      Int                           @id @default(autoincrement())
+//   barcode                 String?                       @unique @db.VarChar(50)
+//   name                    String                        @db.VarChar(255)
+//   price                   Decimal                       @db.Decimal(18, 2)
+//   min_buy                 Decimal?                      @db.Decimal(18, 2)
+//   min_stock               Decimal?                      @db.Decimal(18, 2)
+//   unit_id                 Int
+//   raw_mat_categories_id   Int?
+//   supplier_id             Int?
+//   created_at              DateTime                      @default(now())
+//   deleted_at              DateTime?
+//   updated_at              DateTime?                     @updatedAt
+//   lead_time               Int?
+//   type                    MaterialType?
+//   recommendation_orders   MaterialRecommendationOrder[]
+//   material_requirements   MaterialRequirement[]
+//   rawmaterial_inventories RawMaterialInventory[]
+//   open_pos                RawMaterialOpenPo[]
+//   raw_mat_category        RawMatCategories?             @relation(fields: [raw_mat_categories_id], references: [id])
+//   supplier                Supplier?                     @relation(fields: [supplier_id], references: [id])
+//   unit_raw_material       UnitRawMaterial               @relation(fields: [unit_id], references: [id], onDelete: Cascade)
+//   recipes                 recipes[]
+
+//   @@map("raw_materials")
+// }
+
+// model RawMaterialOpenPo {
+//   id               Int                          @id @default(autoincrement())
+//   raw_material_id  Int
+//   po_number        String?                      @db.VarChar(100)
+//   quantity         Decimal                      @db.Decimal(18, 2)
+//   order_date       DateTime                     @default(now())
+//   expected_arrival DateTime?
+//   status           String                       @default("OPEN") @db.VarChar(50)
+//   created_at       DateTime                     @default(now())
+//   updated_at       DateTime                     @updatedAt
+//   recommendation   MaterialRecommendationOrder?
+//   raw_material     RawMaterial                  @relation(fields: [raw_material_id], references: [id], onDelete: Cascade)
+
+//   @@index([raw_material_id, status])
+//   @@map("raw_material_open_pos")
+// }
+
+// model Supplier {
+//   id            Int           @id @default(autoincrement())
+//   name          String        @db.VarChar(100)
+//   addresses     String
+//   country       String        @db.VarChar(100)
+//   phone         String?       @unique @db.VarChar(20)
+//   created_at    DateTime      @default(now())
+//   updated_at    DateTime      @updatedAt
+//   slug          String?       @unique
+//   raw_materials RawMaterial[]
+
+//   @@map("suppliers")
+// }
+
+// model Warehouse {
+//   id                       Int                    @id @default(autoincrement())
+//   name                     String                 @db.VarChar(100)
+//   created_at               DateTime               @default(now())
+//   updated_at               DateTime               @updatedAt
+//   deleted_at               DateTime?
+//   type                     WarehouseType          @default(FINISH_GOODS)
+//   product_inventories      ProductInventory[]
+//   raw_material_inventories RawMaterialInventory[]
+//   warehouse_address        WarehouseAddress?
+
+//   @@index([name])
+//   @@map("warehouses")
+// }
+
+// model WarehouseAddress {
+//   warehouse_id    Int       @id
+//   street          String
+//   district        String    @db.VarChar(100)
+//   sub_district    String    @db.VarChar(100)
+//   city            String    @db.VarChar(100)
+//   province        String    @db.VarChar(100)
+//   country         String    @db.VarChar(100)
+//   postal_code     String    @db.VarChar(6)
+//   notes           String?
+//   url_google_maps String?
+//   created_at      DateTime  @default(now())
+//   updated_at      DateTime  @updatedAt
+//   warehouse       Warehouse @relation(fields: [warehouse_id], references: [id])
+
+//   @@map("warehouse_addresses")
+// }
+
+// model ProductInventory {
+//   id           Int       @id @default(autoincrement())
+//   product_id   Int
+//   warehouse_id Int
+//   quantity     Decimal   @default(0) @db.Decimal(18, 2)
+//   min_stock    Decimal?  @db.Decimal(18, 2)
+//   created_at   DateTime  @default(now())
+//   updated_at   DateTime  @updatedAt
+//   date         Int       @default(1)
+//   month        Int       @default(1)
+//   year         Int       @default(2024)
+//   product      Product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+//   warehouse    Warehouse @relation(fields: [warehouse_id], references: [id], onDelete: Cascade)
+
+//   @@unique([product_id, warehouse_id, date, month, year])
+//   @@index([product_id])
+//   @@index([warehouse_id])
+//   @@index([date, month, year])
+//   @@map("product_inventories")
+// }
+
+// model RawMaterialInventory {
+//   id              Int         @id @default(autoincrement())
+//   raw_material_id Int
+//   warehouse_id    Int
+//   quantity        Decimal     @default(0) @db.Decimal(18, 2)
+//   min_stock       Decimal?    @db.Decimal(18, 2)
+//   created_at      DateTime    @default(now())
+//   updated_at      DateTime    @updatedAt
+//   date            Int         @default(1)
+//   month           Int         @default(1)
+//   year            Int         @default(2024)
+//   raw_material    RawMaterial @relation(fields: [raw_material_id], references: [id], onDelete: Cascade)
+//   warehouse       Warehouse   @relation(fields: [warehouse_id], references: [id], onDelete: Cascade)
+
+//   @@unique([raw_material_id, warehouse_id, date, month, year])
+//   @@index([raw_material_id])
+//   @@index([warehouse_id])
+//   @@index([date, month, year])
+//   @@map("raw_material_inventories")
+// }
+
+// model Production {
+//   id             Int              @id @default(autoincrement())
+//   product_id     Int
+//   forecast_value Decimal          @db.Decimal(18, 2)
+//   current_stock  Decimal          @db.Decimal(18, 2)
+//   need_produce   Decimal?         @default(0) @db.Decimal(18, 2)
+//   month          Int
+//   year           Int
+//   status         StatusProduction @default(PENDING)
+//   created_at     DateTime         @default(now())
+//   updated_at     DateTime         @updatedAt
+//   product        Product          @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+//   @@map("productions")
+// }
+
+// model MaterialRequirement {
+//   id           Int         @id @default(autoincrement())
+//   raw_mat_id   Int
+//   month        Int
+//   year         Int
+//   total_needed Decimal     @db.Decimal(18, 2)
+//   exploded_at  DateTime    @default(now())
+//   product_id   Int
+//   product      Product     @relation(fields: [product_id], references: [id], onDelete: Cascade)
+//   raw_material RawMaterial @relation(fields: [raw_mat_id], references: [id], onDelete: Cascade)
+
+//   @@unique([product_id, raw_mat_id, month, year])
+//   @@map("material_requirements")
+// }
+
+// model MaterialRecommendationOrder {
+//   id           Int                  @id @default(autoincrement())
+//   raw_mat_id   Int
+//   month        Int
+//   year         Int
+//   quantity     Decimal              @db.Decimal(18, 2)
+//   created_at   DateTime             @default(now())
+//   updated_at   DateTime             @updatedAt
+//   open_po_id   Int?                 @unique
+//   pic_id       String?
+//   status       RecommendationStatus @default(DRAFT)
+//   open_po      RawMaterialOpenPo?   @relation(fields: [open_po_id], references: [id])
+//   pic          User?                @relation(fields: [pic_id], references: [id])
+//   raw_material RawMaterial          @relation(fields: [raw_mat_id], references: [id], onDelete: Cascade)
+
+//   @@unique([raw_mat_id, month, year])
+//   @@map("material_recommendation_orders")
+// }
+
+// model package_application {
+//   id          String    @id
+//   company_id  String    @unique
+//   owner_name  String    @db.VarChar(100)
+//   owner_email String    @db.VarChar(100)
+//   owner_phone String    @db.VarChar(100)
+//   level_app   LEVEL_APP @default(FULL)
+//   status      STATUS    @default(ACTIVE)
+//   created_at  DateTime  @default(now())
+//   expired_at  DateTime
+//   companies   Company   @relation(fields: [company_id], references: [id], onDelete: Cascade)
+// }
+
+// model recipes {
+//   id            Int         @id @default(autoincrement())
+//   quantity      Decimal     @db.Decimal(18, 2)
+//   product_id    Int
+//   raw_mat_id    Int
+//   products      Product     @relation(fields: [product_id], references: [id], onDelete: Cascade)
+//   raw_materials RawMaterial @relation(fields: [raw_mat_id], references: [id], onDelete: Cascade)
+
+//   @@unique([product_id, raw_mat_id])
+// }
