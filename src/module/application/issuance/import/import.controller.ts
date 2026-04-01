@@ -1,11 +1,19 @@
 import { Context } from "hono";
+import { GetUploadedFile } from "../../../../lib/get.file.js";
+import { ParseCSV } from "../../../../lib/csv.js";
+import { ParseXLSX } from "../../../../lib/excel.js";
 import { IssuanceImportService } from "./import.service.js";
 import { ApiResponse } from "../../../../lib/api.response.js";
 import { RequestIssuanceImportDTO } from "./import.schema.js";
 
 class IssuanceImportController {
     static async preview(c: Context) {
-        const rows = c.get("rows");
+        const { buffer, mimetype, filename } = await GetUploadedFile(c);
+        const isXlsx =
+            mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+            filename.endsWith(".xlsx");
+
+        const rows = isXlsx ? await ParseXLSX(buffer) : ParseCSV(buffer);
         const result = await IssuanceImportService.preview(rows);
         return ApiResponse.sendSuccess(c, result, 201);
     }

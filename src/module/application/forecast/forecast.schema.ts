@@ -11,6 +11,7 @@ export const RunForecastSchema = z.object({
     model_used: z
         .enum([
             "SIMPLE_MOVING_AVERAGE",
+            "WEIGHTED_MOVING_AVERAGE",
             "EXPONENTIAL_SMOOTHING",
             "HOLT_WINTERS",
             "LINEAR_REGRESSION",
@@ -18,7 +19,7 @@ export const RunForecastSchema = z.object({
             "ENSEMBLE",
             "AUTO",
         ])
-        .default("LINEAR_REGRESSION")
+        .default("AUTO")
         .optional(),
 });
 
@@ -33,6 +34,8 @@ export const QueryForecastSchema = z.object({
     is_display: z.coerce.boolean().optional(),
     type_id: z.coerce.number().optional(),
     size_id: z.coerce.number().optional(),
+    start_month: z.coerce.number().int().min(1).max(12).optional(),
+    start_year: z.coerce.number().int().min(2000).max(2100).optional(),
 });
 
 // ─── Finalize ──────────────────────────────────────────────────────────────────
@@ -97,12 +100,17 @@ export type ResponseForecastDTO = {
     safety_percentage: number | null;
     current_stock: number;
     need_produce: number;
+    total_forecast: number;
+    total_demand: number;
+    anchor_actual_sales: number | null;
+    anchor_period: string | null;
     monthly_data: Array<{
         month: number;
         year: number;
         period: string;
         base_forecast: number;
         final_forecast: number | null;
+        deviation: number | null;
         trend: string;
         status: string | null;
         is_current_month: boolean;
@@ -110,7 +118,10 @@ export type ResponseForecastDTO = {
         additional_ratio: number;
         system_ratio: number;
         model_used: string | null;
+        actual_sales: number | null;
         percentage_value: number | null;
+        /** (MAE × z_value) / final_forecast + 0.35 — computed dynamically at query time */
+        safety_stock_pct: number | null;
     }>;
     safety_stock_summary: {
         safety_stock_quantity: number | null;
@@ -119,5 +130,8 @@ export type ResponseForecastDTO = {
         z_value_used: number | null;
         additional_ratio: number | null;
         last_updated: Date | null;
+        /** MAE recomputed from visible horizon window (may differ from stored if horizon changes) */
+        computed_mae: number;
+        computed_ss_quantity: number;
     } | null;
 };

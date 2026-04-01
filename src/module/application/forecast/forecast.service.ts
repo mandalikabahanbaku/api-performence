@@ -1,5 +1,5 @@
 import prisma from "../../../config/prisma.js";
-import { Prisma } from "../../../generated/prisma/client.js";
+import { Prisma, $Enums } from "../../../generated/prisma/client.js";
 import { ApiError } from "../../../lib/errors/api.error.js";
 import { GetPagination } from "../../../lib/utils/pagination.js";
 import {
@@ -16,6 +16,7 @@ import { runForecastEngine } from "./engines.js";
 
 const PRODUCT_SELECT = {
     id: true,
+    code: true,
     name: true,
     z_value: true,
     product_type: { select: { slug: true } },
@@ -33,7 +34,6 @@ type SelectedProduct = Prisma.ProductGetPayload<{ select: typeof PRODUCT_SELECT 
 // ─── Forecast Service ─────────────────────────────────────────────────────────
 
 export class ForecastService {
-
     // ── RUN ───────────────────────────────────────────────────────────────────
 
     static async run(body: RunForecastDTO) {
@@ -47,11 +47,15 @@ export class ForecastService {
 
         const generatedIn = new Date();
         generatedIn.setUTCHours(0, 0, 0, 0);
-        const generatedInStr = generatedIn.toISOString().slice(0, 10);
+
+        // anchor = M-1 (last known sales month); forecast covers M..M+horizon-1
+        const anchorDate = new Date(Date.UTC(start_year, start_month - 2, 1));
+        const anchorMonth = anchorDate.getUTCMonth() + 1;
+        const anchorYear = anchorDate.getUTCFullYear();
 
         const monthsRange = Array.from({ length: horizon }, (_, i) => {
-            const d = new Date(start_year, start_month - 1 + i, 1);
-            return { month: d.getMonth() + 1, year: d.getFullYear() };
+            const d = new Date(Date.UTC(start_year, start_month - 1 + i, 1));
+            return { month: d.getUTCMonth() + 1, year: d.getUTCFullYear() };
         });
 
         const products: SelectedProduct[] = product_id
@@ -69,58 +73,93 @@ export class ForecastService {
               });
 
         if (products.length === 0) throw new ApiError(404, "Tidak ada produk aktif ditemukan.");
-
         const productIds = products.map((p) => p.id);
 
-        // Load historical sales (last 12 months before start) from ProductIssuance
-        const histMonths = 12;
+        const histMonths = 14;
         const histPeriods: { month: number; year: number }[] = [];
-        for (let i = histMonths; i >= 1; i--) {
-            const d = new Date(start_year, start_month - 1 - i, 1);
-            histPeriods.push({ month: d.getMonth() + 1, year: d.getFullYear() });
+        for (let i = histMonths - 1; i >= 0; i--) {
+            const d = new Date(Date.UTC(anchorYear, anchorMonth - 1 - i, 1));
+            histPeriods.push({ month: d.getUTCMonth() + 1, year: d.getUTCFullYear() });
+        }
+        const histPeriodFilter = histPeriods.map((p) => ({ month: p.month, year: p.year }));
+
+        // Anchor validation and full history load run in parallel
+        const [anchorSalesCheck, historicalSales] = await Promise.all([
+            prisma.productIssuance.findMany({
+                where: {
+                    product_id: { in: productIds },
+                    month: anchorMonth,
+                    year: anchorYear,
+                    type: "ALL",
+                },
+                select: { product_id: true },
+            }),
+            prisma.productIssuance.findMany({
+                where: { product_id: { in: productIds }, type: "ALL", OR: histPeriodFilter },
+            }),
+        ]);
+
+        const anchorSalesSet = new Set(anchorSalesCheck.map((s) => s.product_id));
+        if (anchorSalesSet.size === 0) {
+            throw new ApiError(
+                400,
+                `Tidak ada data sales pada bulan anchor ${anchorMonth}/${anchorYear} (M-1). Forecast tidak bisa dijalankan.`,
+            );
         }
 
-        const historicalSales = await prisma.productIssuance.findMany({
-            where: {
-                product_id: { in: productIds },
-                type: "ALL",
-                OR: histPeriods.map((p) => ({ month: p.month, year: p.year })),
-            },
-        });
-
-        // O(1) lookup keyed by "productId|month|year"
         const salesLookup = new Map<string, number>();
         for (const s of historicalSales) {
             salesLookup.set(`${s.product_id}|${s.month}|${s.year}`, Number(s.quantity));
         }
 
-        // Build per-product ordered history array aligned with histPeriods
         const histMap = new Map<number, number[]>();
         for (const pid of productIds) {
-            histMap.set(pid, histPeriods.map((hp) => salesLookup.get(`${pid}|${hp.month}|${hp.year}`) ?? 0));
+            histMap.set(
+                pid,
+                histPeriods.map((hp) => salesLookup.get(`${pid}|${hp.month}|${hp.year}`) ?? 0),
+            );
         }
 
+        const MIN_DATA = 3;
         const batch: {
             product_id: number;
             month: number;
             year: number;
             base_forecast: number;
             final_forecast: number;
-            trend: "UP" | "DOWN" | "STABLE";
-            model_used: string;
+            trend: $Enums.Trend;
+            model_used: $Enums.ForecastModel;
             system_ratio: number;
             additional_ratio: number;
-            forecast_for: string; // ISO date string YYYY-MM-DD
-            generated_in: string;
+            forecast_for: Date;
+            generated_in: Date;
             is_actionable: boolean;
         }[] = [];
 
+        const skippedProducts: string[] = [];
+
         for (const product of products) {
-            const history = histMap.get(product.id) ?? [];
-            const { forecasted, modelActuallyUsed } = runForecastEngine(model_used, history, horizon);
+            if (!anchorSalesSet.has(product.id)) {
+                skippedProducts.push(product.code ?? `ID:${product.id}`);
+                continue;
+            }
+
+            const rawHistory = histMap.get(product.id) ?? [];
+            const firstNonZero = rawHistory.findIndex((v) => v > 0);
+            const history = firstNonZero >= 0 ? rawHistory.slice(firstNonZero) : rawHistory;
+
+            if (history.filter((v) => v > 0).length < MIN_DATA) {
+                skippedProducts.push(product.code ?? `ID:${product.id}`);
+                continue;
+            }
+
+            const { forecasted, modelActuallyUsed } = runForecastEngine(
+                model_used,
+                history,
+                horizon,
+            );
 
             const lastActual = history[history.length - 1] ?? 0;
-            // system_ratio: implied monthly growth rate from first forecast vs last actual
             const firstForecastVal = forecasted[0] ?? 0;
             const system_ratio = lastActual > 0 ? (firstForecastVal - lastActual) / lastActual : 0;
 
@@ -133,119 +172,25 @@ export class ForecastService {
                     month: m.month,
                     year: m.year,
                     base_forecast: projected,
-                    final_forecast: projected,
+                    final_forecast: projected, // Statistical buffer added dynamically in get()
                     trend: ForecastService.trend(projected, lastActual),
-                    model_used: modelActuallyUsed,
+                    model_used: modelActuallyUsed as $Enums.ForecastModel,
                     system_ratio: Number(system_ratio.toFixed(4)),
                     additional_ratio: 0,
-                    forecast_for: formatMonthISO(m.year, m.month),
-                    generated_in: generatedInStr,
-                    // is_actionable only for M+1 (first month of horizon)
+                    forecast_for: new Date(formatMonthISO(m.year, m.month)),
+                    generated_in: generatedIn,
                     is_actionable: i === 0,
                 });
             }
         }
 
-        // ----- PERCENTAGE-BASED ENGINE (commented out — kept for reference) -----
-        // The block below implemented the original ForecastPercentage growth formula.
-        // To re-enable, comment out the LR block above and uncomment this section.
-        //
-        // const percentages = await prisma.forecastPercentage.findMany({
-        //     where: { OR: monthsRange.map((m) => ({ month: m.month, year: m.year })) },
-        // });
-        // const pctMap = new Map(percentages.map((p) => [`${p.year}-${p.month}`, p]));
-        // if (percentages.length === 0) throw new ApiError(404, `Data persentase forecast untuk periode ${start_month}/${start_year} belum diatur.`);
-        //
-        // // Load actual sales for base month (M-1)
-        // const prevMonth = start_month === 1 ? 12 : start_month - 1;
-        // const prevYear  = start_month === 1 ? start_year - 1 : start_year;
-        // const salesData = await prisma.productIssuance.findMany({
-        //     where: { product_id: { in: productIds }, year: prevYear, month: prevMonth, type: "ALL" },
-        // });
-        // const inputMap = new Map<number, number>(salesData.map((s) => [s.product_id, Number(s.quantity)]));
-        //
-        // // Group products by name (for special-rule calculations)
-        // const groups = new Map<string, SelectedProduct[]>();
-        // for (const p of products) {
-        //     if (!groups.has(p.name)) groups.set(p.name, []);
-        //     groups.get(p.name)!.push(p);
-        // }
-        //
-        // let currentInputMap = new Map<number, number>(inputMap);
-        // for (let i = 0; i < monthsRange.length; i++) {
-        //     const m = monthsRange[i]!;
-        //     const pct = pctMap.get(`${m.year}-${m.month}`);
-        //     const pctValue = body.is_display ? 0 : Number(pct?.value ?? 0);
-        //     if (!body.is_display && (!pct || Number(pct.value) === 0)) break;
-        //
-        //     const nextInputMap = new Map<number, number>();
-        //     for (const group of groups.values()) {
-        //         const results = group.map((product) => {
-        //             const input = currentInputMap.get(product.id) ?? 0;
-        //             const base  = input * (1 + pctValue);
-        //             return { product, input, base_forecast: base, final_forecast: base };
-        //         });
-        //
-        //         // ── SPECIAL RULES (Display / Atomizer / EDP-Parfum split / 2ml mirror) ──
-        //         // These rules are tied to the percentage-based engine and should be
-        //         // re-enabled together with the pct block above.
-        //
-        //         // const mainBottles = results.filter((r) => { ... });
-        //         // const totalInputBase = mainBottles.reduce(...);
-        //         // const totalForecastBase = totalInputBase * (1 + pctValue);
-        //         // const totalDistPctMain = mainBottles.reduce(...);
-        //         // const edpMain    = results.find(...);
-        //         // const parfumMain = results.find(...);
-        //         // const edpMainFinal    = totalForecastBase * Number(edpMain?.product.distribution_percentage ?? 0);
-        //         // const parfumMainFinal = totalForecastBase * Number(parfumMain?.product.distribution_percentage ?? 0);
-        //         //
-        //         // results.forEach((r) => {
-        //         //     const slug    = r.product.product_type?.slug?.toLowerCase();
-        //         //     const size    = r.product.size?.size;
-        //         //     const distPct = Number(r.product.distribution_percentage ?? 0);
-        //         //
-        //         //     // Atomizer mirrors total main-bottle pool
-        //         //     if (slug === "atomizer") {
-        //         //         if (mainBottles.length > 0) r.final_forecast = totalForecastBase * totalDistPctMain;
-        //         //     }
-        //         //     // Main bottles split proportional to EDAR
-        //         //     else if ((slug === "parfum" || slug === "perfume" || slug === "edp" ||
-        //         //               slug === "hampers-edp" || slug === "hampers-parfum") &&
-        //         //              (size === 110 || size === 100)) {
-        //         //         if (mainBottles.length > 0) r.final_forecast = totalForecastBase * distPct;
-        //         //     }
-        //         //     // 2ml mirrors its Main variant
-        //         //     else if (size === 2) {
-        //         //         if ((slug === "edp" || slug === "hampers-edp") && edpMain)
-        //         //             r.final_forecast = edpMainFinal;
-        //         //         else if ((slug === "parfum" || slug === "perfume" || slug === "hampers-parfum") && parfumMain)
-        //         //             r.final_forecast = parfumMainFinal;
-        //         //     }
-        //         //     // Force 0 when distribution_percentage is 0
-        //         //     if ((slug === "edp" || slug === "parfum" || slug === "perfume" ||
-        //         //          slug === "hampers-edp" || slug === "hampers-parfum") && distPct === 0)
-        //         //         r.final_forecast = 0;
-        //         //     else if (slug === "atomizer" && (totalForecastBase === 0 || totalDistPctMain === 0))
-        //         //         r.final_forecast = 0;
-        //         // });
-        //
-        //         for (const r of results) {
-        //             batch.push({
-        //                 product_id: r.product.id, month: m.month, year: m.year,
-        //                 base_forecast: r.base_forecast, final_forecast: r.final_forecast,
-        //                 trend: ForecastService.trend(r.final_forecast, r.input),
-        //                 forecast_percentage_id: pct?.id ?? 1,
-        //                 status: i === 0 ? "ADJUSTED" : "DRAFT",
-        //             });
-        //             nextInputMap.set(r.product.id, r.final_forecast);
-        //         }
-        //     }
-        //     currentInputMap = nextInputMap;
-        // }
-        // ─────────────────────────────────────────────────────────────────────────
-
         if (batch.length === 0) {
-            return { message: "Tidak ada data forecast yang diproses.", processed_records: 0, safety_stock_records: 0 };
+            return {
+                message: `Tidak ada data forecast yang diproses. ${skippedProducts.length} produk dilewati.`,
+                processed_records: 0,
+                safety_stock_records: 0,
+                skipped_products: skippedProducts,
+            };
         }
 
         const periodSet = new Set(batch.map((b) => `${b.product_id}|${b.month}|${b.year}`));
@@ -253,203 +198,81 @@ export class ForecastService {
             const [pid, mo, yr] = k.split("|").map(Number);
             return { product_id: pid!, month: mo!, year: yr! };
         });
+        const periodFilter = periodTuples.map((p) => ({
+            product_id: p.product_id,
+            month: p.month,
+            year: p.year,
+        }));
 
-        // Fetch current max versions
-        const existingVersions = await prisma.$queryRaw<
-            { product_id: number; month: number; year: number; max_ver: number }[]
-        >`
-            SELECT product_id, month, year, MAX(version) as max_ver
-            FROM "forecasts"
-            WHERE (product_id, month, year) IN (
-                SELECT unnest(ARRAY[${Prisma.join(periodTuples.map((p) => p.product_id))}]::int[]),
-                       unnest(ARRAY[${Prisma.join(periodTuples.map((p) => p.month))}]::int[]),
-                       unnest(ARRAY[${Prisma.join(periodTuples.map((p) => p.year))}]::int[])
-            )
-            GROUP BY product_id, month, year
-        `;
+        const existingLatest = await prisma.forecast.findMany({
+            where: {
+                is_latest: true,
+                OR: periodFilter,
+            },
+            select: { product_id: true, month: true, year: true, version: true },
+            orderBy: { version: "desc" },
+        });
 
         const versionMap = new Map<string, number>();
-        for (const row of existingVersions) {
-            versionMap.set(`${row.product_id}|${row.month}|${row.year}`, row.max_ver);
+        for (const row of existingLatest) {
+            const key = `${row.product_id}|${row.month}|${row.year}`;
+            if (!versionMap.has(key)) versionMap.set(key, row.version);
         }
 
-        // Mark existing is_latest = false
-        if (existingVersions.length > 0) {
-            await prisma.$executeRawUnsafe(`
-                UPDATE "forecasts"
-                SET is_latest = false
-                WHERE (product_id, month, year) IN (
-                    SELECT unnest(ARRAY[${periodTuples.map((p) => p.product_id).join(",")}]::int[]),
-                           unnest(ARRAY[${periodTuples.map((p) => p.month).join(",")}]::int[]),
-                           unnest(ARRAY[${periodTuples.map((p) => p.year).join(",")}]::int[])
-                )
-                AND is_latest = true
-            `);
-        }
-
-        const nowIso = new Date().toISOString();
-        const start = Date.now();
+        const now = new Date();
 
         try {
             const chunkSize = 4000;
-            await prisma.$transaction(async (tx) => {
-                for (let i = 0; i < batch.length; i += chunkSize) {
-                    const chunk = batch.slice(i, i + chunkSize);
-                    const valuesSql = chunk
-                        .map((f) => {
-                            const newVer = (versionMap.get(`${f.product_id}|${f.month}|${f.year}`) ?? 0) + 1;
-                            return `(${f.product_id}, ${f.month}, ${f.year}, '${f.trend}', 'DRAFT', ${f.base_forecast}, ${f.final_forecast}, ${newVer}, true, '${f.model_used}', ${f.system_ratio}, ${f.additional_ratio}, '${f.forecast_for}', '${f.generated_in}', ${f.is_actionable}, '${nowIso}', '${nowIso}')`;
-                        })
-                        .join(", ");
+            await prisma.$transaction(
+                async (tx) => {
+                    await tx.forecast.updateMany({
+                        where: { is_latest: true, OR: periodFilter },
+                        data: { is_latest: false },
+                    });
 
-                    await tx.$executeRawUnsafe(`
-                        INSERT INTO "forecasts" (
-                            product_id, month, year, trend, status,
-                            base_forecast, final_forecast, version, is_latest,
-                            model_used, system_ratio, additional_ratio,
-                            forecast_for, generated_in, is_actionable,
-                            created_at, updated_at
-                        )
-                        VALUES ${valuesSql}
-                    `);
-                }
-            }, { timeout: 60000 });
-
-            const duration = ((Date.now() - start) / 1000).toFixed(2);
-            console.log(`[Forecast Engine] Insert ${batch.length} rows in ${duration}s`);
+                    for (let i = 0; i < batch.length; i += chunkSize) {
+                        const chunk = batch.slice(i, i + chunkSize);
+                        await tx.forecast.createMany({
+                            data: chunk.map((f) => ({
+                                product_id: f.product_id,
+                                month: f.month,
+                                year: f.year,
+                                trend: f.trend,
+                                status: $Enums.ForecastStatus.DRAFT,
+                                base_forecast: isFinite(f.base_forecast) ? f.base_forecast : 0,
+                                final_forecast: isFinite(f.final_forecast) ? f.final_forecast : 0,
+                                version:
+                                    (versionMap.get(`${f.product_id}|${f.month}|${f.year}`) ?? 0) +
+                                    1,
+                                is_latest: true,
+                                model_used: f.model_used,
+                                system_ratio: isFinite(f.system_ratio) ? f.system_ratio : 0,
+                                additional_ratio: isFinite(f.additional_ratio)
+                                    ? f.additional_ratio
+                                    : 0,
+                                forecast_for: f.forecast_for,
+                                generated_in: f.generated_in,
+                                is_actionable: f.is_actionable,
+                                created_at: now,
+                                updated_at: now,
+                            })),
+                        });
+                    }
+                },
+                { timeout: 60000 },
+            );
         } catch (err) {
             console.error("[Forecast Engine] Bulk Insert Error:", err);
             throw new ApiError(500, "Gagal melakukan bulk insert forecast.");
         }
 
-        // Safety Stock — MAE-based with z_value.
-        // MAE = mean(|actual - forecast|) over the same 12-month historical window.
-        // On the first run there are no prior forecasts, so MAE = 0.
-        const [ssHistoricalForecasts, ssActuals] = await Promise.all([
-            prisma.forecast.findMany({
-                where: {
-                    product_id: { in: productIds },
-                    is_latest: false,
-                    // Bound to the same 12-month window used for LR fitting
-                    OR: histPeriods.map((p) => ({ month: p.month, year: p.year })),
-                },
-                select: { product_id: true, month: true, year: true, final_forecast: true },
-            }),
-            prisma.productIssuance.findMany({
-                where: {
-                    product_id: { in: productIds },
-                    type: "ALL",
-                    OR: histPeriods.map((p) => ({ month: p.month, year: p.year })),
-                },
-                select: { product_id: true, month: true, year: true, quantity: true },
-            }),
-        ]);
-
-        // O(1) lookup for actuals
-        const actualsLookup = new Map<string, number>();
-        for (const a of ssActuals) {
-            actualsLookup.set(`${a.product_id}|${a.month}|${a.year}`, Number(a.quantity));
-        }
-
-        // Build MAE per product using O(forecasts) passes
-        const maeMap = new Map<number, number>();
-        const errorAccum = new Map<number, { sum: number; count: number }>();
-        for (const pf of ssHistoricalForecasts) {
-            const actual = actualsLookup.get(`${pf.product_id}|${pf.month}|${pf.year}`);
-            if (actual === undefined) continue;
-            const err = Math.abs(actual - Number(pf.final_forecast));
-            const acc = errorAccum.get(pf.product_id) ?? { sum: 0, count: 0 };
-            acc.sum += err; acc.count += 1;
-            errorAccum.set(pf.product_id, acc);
-        }
-        for (const pid of productIds) {
-            const acc = errorAccum.get(pid);
-            maeMap.set(pid, acc && acc.count > 0 ? acc.sum / acc.count : 0);
-        }
-        const safetyStockBatch: {
-            product_id: number;
-            month: number;
-            year: number;
-            mean_absolute_error: number;
-            safety_stock_quantity: number;
-            safety_stock_ratio: number;
-            z_value_used: number;
-            additional_ratio: number;
-        }[] = [];
-
-        for (const product of products) {
-            const zValue = Number(product.z_value ?? 1.65);
-            const mae = maeMap.get(product.id) ?? 0;
-            // SS = z * MAE (statistical safety stock formula)
-            const ssQty = zValue * mae;
-            // safety_stock_ratio = SS as a proportion of the first forecast month demand
-            const firstForecast = batch.find(
-                (b) => b.product_id === product.id && b.month === monthsRange[0]!.month && b.year === monthsRange[0]!.year,
-            );
-            const demandRef = firstForecast?.final_forecast ?? 0;
-            const ssRatio = demandRef > 0 ? ssQty / demandRef : 0;
-
-            // One SS record per forecast month
-            for (const m of monthsRange) {
-                safetyStockBatch.push({
-                    product_id: product.id,
-                    month: m.month,
-                    year: m.year,
-                    mean_absolute_error: Number(mae.toFixed(2)),
-                    safety_stock_quantity: Number(ssQty.toFixed(2)),
-                    safety_stock_ratio: Number(ssRatio.toFixed(4)),
-                    z_value_used: Number(zValue.toFixed(3)),
-                    additional_ratio: 0,
-                });
-            }
-        }
-
-        if (safetyStockBatch.length > 0) {
-            try {
-                const chunkSize = 4000;
-                await prisma.$transaction(async (tx) => {
-                    for (let i = 0; i < safetyStockBatch.length; i += chunkSize) {
-                        const chunk = safetyStockBatch.slice(i, i + chunkSize);
-                        const valuesSql = chunk
-                            .map(
-                                (s) =>
-                                    `(${s.product_id}, ${s.month}, ${s.year}, ${s.mean_absolute_error}, ${s.safety_stock_quantity}, ${s.safety_stock_ratio}, ${s.z_value_used}, ${s.additional_ratio}, '${nowIso}', '${nowIso}')`,
-                            )
-                            .join(", ");
-
-                        await tx.$executeRawUnsafe(`
-                            INSERT INTO "safety_stock" (
-                                product_id, month, year,
-                                mean_absolute_error, safety_stock_quantity, safety_stock_ratio,
-                                z_value_used, additional_ratio,
-                                created_at, updated_at
-                            )
-                            VALUES ${valuesSql}
-                            ON CONFLICT (product_id, month, year)
-                            DO UPDATE SET
-                                mean_absolute_error   = EXCLUDED.mean_absolute_error,
-                                safety_stock_quantity = EXCLUDED.safety_stock_quantity,
-                                safety_stock_ratio    = EXCLUDED.safety_stock_ratio,
-                                z_value_used          = EXCLUDED.z_value_used,
-                                additional_ratio      = EXCLUDED.additional_ratio,
-                                updated_at            = EXCLUDED.updated_at
-                        `);
-                    }
-                }, { timeout: 60000 });
-                console.log(`[Forecast Engine] Safety Stock Upsert: ${safetyStockBatch.length} rows`);
-            } catch (err) {
-                console.error("[Forecast Engine] Safety Stock Error:", err);
-            }
-        }
-
         return {
-            message: `Forecast berhasil disimpan: ${batch.length} record. Safety Stock: ${safetyStockBatch.length} record.`,
+            message: `Forecast berhasil disimpan: ${batch.length} record.`,
             processed_records: batch.length,
-            safety_stock_records: safetyStockBatch.length,
+            safety_stock_records: 0,
+            skipped_products: skippedProducts,
         };
     }
-
-    // ── MANUAL UPDATE ─────────────────────────────────────────────────────────
 
     static async updateManual(body: UpdateManualForecastDTO) {
         const { product_id, month, year, final_forecast, additional_ratio } = body;
@@ -472,14 +295,16 @@ export class ForecastService {
 
         let resolvedBase: number;
         if (existing) {
-            resolvedBase = final_forecast !== undefined ? final_forecast : Number(existing.base_forecast);
+            resolvedBase =
+                final_forecast !== undefined ? final_forecast : Number(existing.base_forecast);
         } else {
             const prevMonth = month === 1 ? 12 : month - 1;
-            const prevYear  = month === 1 ? year - 1 : year;
+            const prevYear = month === 1 ? year - 1 : year;
             const sales = await prisma.productIssuance.findFirst({
                 where: { product_id, month: prevMonth, year: prevYear, type: "ALL" },
             });
-            resolvedBase = final_forecast !== undefined ? final_forecast : Number(sales?.quantity ?? 0);
+            resolvedBase =
+                final_forecast !== undefined ? final_forecast : Number(sales?.quantity ?? 0);
         }
 
         const resolvedRatio = additional_ratio !== undefined ? additional_ratio : 0;
@@ -535,7 +360,9 @@ export class ForecastService {
             await prisma.safetyStock.upsert({
                 where: { product_id_month_year: { product_id, month, year } },
                 create: {
-                    product_id, month, year,
+                    product_id,
+                    month,
+                    year,
                     mean_absolute_error: mae,
                     safety_stock_quantity: ssQty,
                     safety_stock_ratio: ssRatio,
@@ -556,9 +383,10 @@ export class ForecastService {
                 return { month: d.getMonth() + 1, year: d.getFullYear() };
             });
 
-            await prisma.$transaction(async (tx) => {
-                // Mark all existing records for this product in the range as not-latest
-                await tx.$executeRawUnsafe(`
+            await prisma.$transaction(
+                async (tx) => {
+                    // Mark all existing records for this product in the range as not-latest
+                    await tx.$executeRawUnsafe(`
                     UPDATE "forecasts"
                     SET is_latest = false
                     WHERE product_id = ${product_id}
@@ -567,16 +395,16 @@ export class ForecastService {
                       AND is_latest = true
                 `);
 
-                const forecastValues = monthsRange
-                    .map((m) => {
-                        const isTargetMonth = m.month === month && m.year === year;
-                        const mRatio = isTargetMonth ? resolvedRatio : 0;
-                        const mFinal = resolvedBase * (1 + mRatio / 100);
-                                return `(${product_id}, ${m.month}, ${m.year}, 'STABLE', 'ADJUSTED', ${resolvedBase}, ${mFinal}, ${mRatio}, 1, true, 'LINEAR_REGRESSION', 0, '${formatMonthISO(m.year, m.month)}', '${nowIso.slice(0, 10)}', false, '${nowIso}', '${nowIso}')`;
-                    })
-                    .join(", ");
+                    const forecastValues = monthsRange
+                        .map((m) => {
+                            const isTargetMonth = m.month === month && m.year === year;
+                            const mRatio = isTargetMonth ? resolvedRatio : 0;
+                            const mFinal = resolvedBase * (1 + mRatio / 100);
+                            return `(${product_id}, ${m.month}, ${m.year}, 'STABLE', 'ADJUSTED', ${resolvedBase}, ${mFinal}, ${mRatio}, 1, true, 'LINEAR_REGRESSION', 0, '${formatMonthISO(m.year, m.month)}', '${nowIso.slice(0, 10)}', false, '${nowIso}', '${nowIso}')`;
+                        })
+                        .join(", ");
 
-                await tx.$executeRawUnsafe(`
+                    await tx.$executeRawUnsafe(`
                     INSERT INTO "forecasts" (
                         product_id, month, year, trend, status,
                         base_forecast, final_forecast, additional_ratio,
@@ -586,18 +414,16 @@ export class ForecastService {
                     ) VALUES ${forecastValues}
                 `);
 
-                const ssValues = monthsRange
-                    .map((m) => {
-                        const isTargetMonth = m.month === month && m.year === year;
-                        const mFinal = resolvedBase * (1 + (isTargetMonth ? resolvedRatio : 0) / 100);
-                        const zValue = Number(product.z_value ?? 1.65);
-                        // MAE is 0 on manual update — SS will be refined on next engine run
-                        const ssRatio = 0;
-                        return `(${product_id}, ${m.month}, ${m.year}, 0, 0, ${ssRatio}, ${zValue.toFixed(3)}, 0, '${nowIso}', '${nowIso}')`;
-                    })
-                    .join(", ");
+                    const ssValues = monthsRange
+                        .map((m) => {
+                            const zValue = Number(product.z_value ?? 1.65);
+                            // MAE is 0 on manual update — SS will be refined on next engine run
+                            const ssRatio = 0;
+                            return `(${product_id}, ${m.month}, ${m.year}, 0, 0, ${ssRatio}, ${zValue.toFixed(3)}, 0, '${nowIso}', '${nowIso}')`;
+                        })
+                        .join(", ");
 
-                await tx.$executeRawUnsafe(`
+                    await tx.$executeRawUnsafe(`
                     INSERT INTO "safety_stock" (
                         product_id, month, year,
                         mean_absolute_error, safety_stock_quantity, safety_stock_ratio,
@@ -611,7 +437,9 @@ export class ForecastService {
                         z_value_used          = EXCLUDED.z_value_used,
                         updated_at            = EXCLUDED.updated_at
                 `);
-            }, { timeout: 30000 });
+                },
+                { timeout: 30000 },
+            );
         }
 
         return { message: "Forecast berhasil diperbarui secara manual." };
@@ -623,17 +451,26 @@ export class ForecastService {
         query: QueryForecastDTO,
     ): Promise<{ data: ResponseForecastDTO[]; len: number }> {
         const now = new Date();
-        const monthsWindow = ForecastService.resolveHorizonMonths(now, query.horizon ?? 12);
+        const anchorMonth = query.start_month ?? now.getMonth() + 1;
+        const anchorYear = query.start_year ?? now.getFullYear();
+        const anchorDate = new Date(Date.UTC(anchorYear, anchorMonth - 1, 1));
+        const monthsWindow = ForecastService.resolveHorizonMonths(anchorDate, query.horizon ?? 12);
 
         const page = query.page ?? 1;
         const take = query.take ?? 25;
         const { skip, take: limit } = GetPagination(page, take);
 
-        const startYear  = monthsWindow[0]!.year;
+        const startYear = monthsWindow[0]!.year;
         const startMonth = monthsWindow[0]!.month;
-        const endYear    = monthsWindow[monthsWindow.length - 1]!.year;
-        const endMonth   = monthsWindow[monthsWindow.length - 1]!.month;
-        const searchRaw  = query.search ? `%${query.search}%` : null;
+        const endYear = monthsWindow[monthsWindow.length - 1]!.year;
+        const endMonth = monthsWindow[monthsWindow.length - 1]!.month;
+
+        // Stable sort reference (System Now)
+        const sysContext = new Date();
+        const sysMonth = sysContext.getMonth() + 1;
+        const sysYear = sysContext.getFullYear();
+
+        const searchRaw = query.search ? `%${query.search}%` : null;
 
         // Load ForecastPercentage for display in UI (retained for reference)
         const rangePercentages = await prisma.forecastPercentage.findMany({
@@ -672,6 +509,9 @@ export class ForecastService {
                 forecasts_data: string | null;
                 safety_stock_data: string | null;
                 current_stock: number | null;
+                m1_final_forecast: number | null;
+                m1_base_forecast: number | null;
+                sys_m0_base_forecast: number | null;
             }[]
         >`
             SELECT
@@ -688,6 +528,8 @@ export class ForecastService {
 
                 MAX(COALESCE(f_m1.final_forecast, 0)) OVER(PARTITION BY p.name) as group_sort_priority,
                 COALESCE(f_m1.final_forecast, 0) as m1_final_forecast,
+                COALESCE(f_m1.base_forecast, 0) as m1_base_forecast,
+                COALESCE(f_now.base_forecast, 0) as sys_m0_base_forecast,
 
                 (
                     SELECT COALESCE(json_agg(
@@ -701,7 +543,16 @@ export class ForecastService {
                             'additional_ratio', f.additional_ratio,
                             'system_ratio',     f.system_ratio,
                             'model_used',       f.model_used,
-                            'is_actionable',    f.is_actionable
+                            'is_actionable',    f.is_actionable,
+                            'actual_sales',     (
+                                SELECT pis.quantity
+                                FROM "product_issuances" pis
+                                WHERE pis.product_id = f.product_id
+                                  AND pis.month = f.month
+                                  AND pis.year = f.year
+                                  AND pis.type = 'ALL'
+                                LIMIT 1
+                            )
                         ) ORDER BY f.year ASC, f.month ASC
                     ), '[]'::json)
                     FROM "forecasts" f
@@ -741,6 +592,9 @@ export class ForecastService {
                 WHERE month = ${startMonth} AND year = ${startYear}
                 GROUP BY product_id
             ) pi ON p.id = pi.product_id
+            LEFT JOIN "forecasts" f_now ON f_now.product_id = p.id
+                AND f_now.month = ${sysMonth} AND f_now.year = ${sysYear}
+                AND f_now.is_latest = true
             WHERE p.status NOT IN ('DELETE', 'PENDING', 'BLOCK')
               AND p.deleted_at IS NULL
               AND (
@@ -754,6 +608,9 @@ export class ForecastService {
             ${query.type_id ? Prisma.sql`AND p.type_id = ${query.type_id}` : Prisma.empty}
             ${query.size_id ? Prisma.sql`AND p.size_id = ${query.size_id}` : Prisma.empty}
             ORDER BY
+                sys_m0_base_forecast DESC,
+                m1_base_forecast DESC,
+                m1_final_forecast DESC,
                 group_sort_priority DESC,
                 p.name ASC,
                 CASE
@@ -771,6 +628,29 @@ export class ForecastService {
             LIMIT ${limit} OFFSET ${skip}
         `;
 
+        // Include anchor month (M-1) for UI context (to show what was used as forecast input)
+        const anchorRefDate = new Date(Date.UTC(startYear, startMonth - 2, 1));
+        const anchorRefMonth = anchorRefDate.getUTCMonth() + 1;
+        const anchorRefYear = anchorRefDate.getUTCFullYear();
+
+        // Fetch actual sales for window + anchor month
+        const actualSales = await prisma.productIssuance.findMany({
+            where: {
+                product_id: { in: productsRaw.map((p) => p.id) },
+                type: "ALL",
+                OR: [
+                    ...monthsWindow.map((m) => ({ month: m.month, year: m.year })),
+                    { month: anchorRefMonth, year: anchorRefYear },
+                ],
+            },
+            select: { product_id: true, month: true, year: true, quantity: true },
+        });
+
+        const actualSalesMap = new Map<string, number>();
+        for (const s of actualSales) {
+            actualSalesMap.set(`${s.product_id}|${s.month}|${s.year}`, Number(s.quantity));
+        }
+
         const data: ResponseForecastDTO[] = productsRaw.map((p) => {
             const rawForecasts: {
                 month: number;
@@ -783,6 +663,7 @@ export class ForecastService {
                 system_ratio: string | null;
                 model_used: string | null;
                 is_actionable: boolean;
+                actual_sales: string | null; // This might be null if no forecast entry exists
             }[] =
                 typeof p.forecasts_data === "string"
                     ? JSON.parse(p.forecasts_data)
@@ -790,8 +671,15 @@ export class ForecastService {
 
             const forecastByKey = new Map(rawForecasts.map((f) => [`${f.year}-${f.month}`, f]));
 
+            const ss =
+                typeof p.safety_stock_data === "string"
+                    ? JSON.parse(p.safety_stock_data)
+                    : p.safety_stock_data;
+
             const monthly_data: ResponseForecastDTO["monthly_data"] = monthsWindow.map((m) => {
                 const forecast = forecastByKey.get(`${m.year}-${m.month}`);
+                const actual = actualSalesMap.get(`${p.id}|${m.month}|${m.year}`);
+
                 return {
                     month: m.month,
                     year: m.year,
@@ -799,30 +687,82 @@ export class ForecastService {
                     base_forecast: Number(forecast?.base_forecast ?? 0),
                     final_forecast:
                         forecast?.final_forecast != null ? Number(forecast.final_forecast) : null,
+                    deviation: null,
                     trend: forecast?.trend ?? "STABLE",
                     status: forecast?.status ?? null,
                     is_current_month: m.is_current_month,
                     is_actionable: forecast?.is_actionable ?? false,
-                    additional_ratio: forecast?.additional_ratio != null ? Number(forecast.additional_ratio) : 0,
-                    system_ratio: forecast?.system_ratio != null ? Number(forecast.system_ratio) : 0,
+                    additional_ratio:
+                        forecast?.additional_ratio != null ? Number(forecast.additional_ratio) : 0,
+                    system_ratio:
+                        forecast?.system_ratio != null ? Number(forecast.system_ratio) : 0,
                     model_used: forecast?.model_used ?? null,
+                    actual_sales:
+                        actual ??
+                        (forecast?.actual_sales != null ? Number(forecast.actual_sales) : null),
                     percentage_value: pctMap.has(`${m.year}-${m.month}`)
-                        ? Number((Number(pctMap.get(`${m.year}-${m.month}`)!.value) * 100).toFixed(2))
+                        ? Number(
+                              (Number(pctMap.get(`${m.year}-${m.month}`)!.value) * 100).toFixed(2),
+                          )
                         : null,
+                    safety_stock_pct: null, // filled in below after MAE is computed
                 };
             });
 
-            const ss =
-                typeof p.safety_stock_data === "string"
-                    ? JSON.parse(p.safety_stock_data)
-                    : p.safety_stock_data;
+            const anchorActual = actualSalesMap.get(`${p.id}|${anchorRefMonth}|${anchorRefYear}`);
+
+            // Deviation: |base_forecast - prev_actual| (prev_actual = anchor for M1, previous month for rest)
+            monthly_data.forEach((m, idx) => {
+                const prevActual =
+                    idx > 0 ? monthly_data[idx - 1]?.actual_sales : (anchorActual ?? null);
+                m.deviation =
+                    prevActual != null
+                        ? Math.abs(Number(m.base_forecast) - Number(prevActual))
+                        : null;
+            });
+
+            // 4. Dynamic MAE: Average of Deviations (|Base - PrevActual|) across the visible horizon.
+            const zVal = Number(p.z_value ?? 1.65);
+            const validDeviations = monthly_data.filter((m) => m.deviation !== null);
+            const computedMae =
+                validDeviations.length > 0
+                    ? validDeviations.reduce((sum, m) => sum + m.deviation!, 0) /
+                      validDeviations.length
+                    : ss?.mean_absolute_error
+                      ? Number(ss.mean_absolute_error)
+                      : 0;
+
+            // SS quantity = MAE × z_value
+            const computedSsQty = computedMae * zVal;
+
+            // 5. Per-month %SAFETY = (SS_qty / Base Forecast) + 35%
+            monthly_data.forEach((m) => {
+                const base = Number(m.base_forecast);
+
+                // %SAFETY calculation (Ratio)
+                m.safety_stock_pct =
+                    base > 0 ? Number((computedSsQty / base + 0.35).toFixed(4)) : 0.35;
+
+                // Dynamically set Final Forecast for non-finalized (DRAFT/null) records
+                if (!m.status || m.status === "DRAFT") {
+                    m.final_forecast = Math.abs(base * (1 + m.safety_stock_pct));
+                }
+            });
 
             const m1MonthData = monthly_data.find(
                 (m) => m.month === startMonth && m.year === startYear,
             );
-            const m1Forecast  = m1MonthData?.final_forecast ?? 0;
+            const m1Forecast = m1MonthData?.final_forecast ?? 0;
             const currentStock = Number(p.current_stock ?? 0);
-            const needProduce  = Math.max(0, m1Forecast - currentStock);
+            const needProduce = Math.max(0, m1Forecast - currentStock);
+
+            const totalForecast = monthly_data.reduce(
+                (sum, m) => sum + Number(m.final_forecast ?? m.base_forecast ?? 0),
+                0,
+            );
+
+            // Total Demand now matches Total Forecast as buffer is integrated
+            const totalDemand = totalForecast;
 
             return {
                 product_id: p.id,
@@ -839,17 +779,25 @@ export class ForecastService {
                     : 0,
                 current_stock: currentStock,
                 need_produce: needProduce,
+                total_forecast: totalForecast,
+                total_demand: totalDemand,
+                anchor_actual_sales: anchorActual ?? null,
+                anchor_period: `${anchorRefMonth}/${anchorRefYear}`,
                 monthly_data,
-                safety_stock_summary: ss
-                    ? {
-                          safety_stock_quantity: ss.safety_stock_quantity != null ? Number(ss.safety_stock_quantity) : null,
-                          safety_stock_ratio: ss.safety_stock_ratio != null ? Number(ss.safety_stock_ratio) : null,
-                          mean_absolute_error: ss.mean_absolute_error != null ? Number(ss.mean_absolute_error) : null,
-                          z_value_used: ss.z_value_used != null ? Number(ss.z_value_used) : null,
-                          additional_ratio: ss.additional_ratio != null ? Number(ss.additional_ratio) : null,
-                          last_updated: ss.created_at ? new Date(ss.created_at) : null,
-                      }
-                    : null,
+                safety_stock_summary: {
+                    safety_stock_quantity:
+                        ss?.safety_stock_quantity != null ? Number(ss.safety_stock_quantity) : null,
+                    safety_stock_ratio:
+                        ss?.safety_stock_ratio != null ? Number(ss.safety_stock_ratio) : null,
+                    mean_absolute_error:
+                        ss?.mean_absolute_error != null ? Number(ss.mean_absolute_error) : null,
+                    z_value_used: ss?.z_value_used != null ? Number(ss.z_value_used) : null,
+                    additional_ratio:
+                        ss?.additional_ratio != null ? Number(ss.additional_ratio) : null,
+                    last_updated: ss?.created_at ? new Date(ss.created_at) : null,
+                    computed_mae: Number(computedMae.toFixed(2)),
+                    computed_ss_quantity: Number(computedSsQty.toFixed(2)),
+                },
             };
         });
 
@@ -901,7 +849,8 @@ export class ForecastService {
         const result = await prisma.forecast.deleteMany({
             where: { month: data.month, year: data.year },
         });
-        if (result.count === 0) throw new ApiError(400, "Tidak ada data forecast untuk dihapus pada periode ini");
+        if (result.count === 0)
+            throw new ApiError(400, "Tidak ada data forecast untuk dihapus pada periode ini");
         return { count: result.count };
     }
 
@@ -918,15 +867,23 @@ export class ForecastService {
 
     // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
 
-    private static resolveHorizonMonths(now: Date, horizon: number) {
-        const startYear  = now.getUTCFullYear();
-        const startMonth = now.getUTCMonth() + 1;
+    private static resolveHorizonMonths(anchor: Date, horizon: number) {
+        const startYear = anchor.getFullYear();
+        const startMonth = anchor.getMonth(); // 0-indexed
+
+        const now = new Date();
+        const currentMonth = now.getMonth() + 1;
+        const currentYear = now.getFullYear();
+
         return Array.from({ length: horizon }, (_, i) => {
-            const d = new Date(Date.UTC(startYear, startMonth - 1 + i, 1));
+            // anchor month (M+0) as the first column
+            const d = new Date(startYear, startMonth + i, 1);
+            const m = d.getMonth() + 1;
+            const y = d.getFullYear();
             return {
-                year: d.getUTCFullYear(),
-                month: d.getUTCMonth() + 1,
-                is_current_month: i === 0,
+                year: y,
+                month: m,
+                is_current_month: m === currentMonth && y === currentYear,
             };
         });
     }
@@ -954,7 +911,10 @@ export class ForecastService {
         });
 
         if (variations.length === 0) {
-            throw new ApiError(404, `Tidak ada variasi produk aktif ditemukan untuk "${target.name}".`);
+            throw new ApiError(
+                404,
+                `Tidak ada variasi produk aktif ditemukan untuk "${target.name}".`,
+            );
         }
         return variations;
     }

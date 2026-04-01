@@ -6,9 +6,12 @@ async function seed() {
     try {
         const delForecast = await prisma.forecast.deleteMany({});
         const delPercentage = await prisma.forecastPercentage.deleteMany({});
+        const delSafety = await prisma.safetyStock.deleteMany({});
+        // await prisma.productIssuance.deleteMany({});
 
         console.log(`✅ Deleted ${delForecast.count} forecast records.`);
         console.log(`✅ Deleted ${delPercentage.count} forecast percentage records.`);
+        console.log(`✅ Deleted ${delSafety.count} safety stock records.`);
 
         console.log("🌱 Forecast cleanup completed.");
     } catch (error) {

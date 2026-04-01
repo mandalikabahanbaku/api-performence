@@ -42,6 +42,24 @@ function runSMA(series: number[], horizon: number, window = 3): number[] {
     return Array.from({ length: horizon }, () => avg);
 }
 
+// ─── Weighted Moving Average ──────────────────────────────────────────────────
+
+/**
+ * Linear WMA: Latest data gets weight = N, oldest gets weight = 1.
+ * WMA = sum(value[i] * (i+1)) / sum(1..N)
+ */
+function runWMA(series: number[], horizon: number): number[] {
+    const n = series.length;
+    if (n === 0) return Array(horizon).fill(0);
+    if (n === 1) return Array(horizon).fill(series[0]);
+
+    const weightSum = (n * (n + 1)) / 2;
+    const weightedSum = series.reduce((acc, val, i) => acc + val * (i + 1), 0);
+    const value = weightedSum / weightSum;
+
+    return Array.from({ length: horizon }, () => value);
+}
+
 // ─── Exponential Smoothing (Holt's Double / Holt-Linear) ─────────────────────
 
 /**
@@ -124,6 +142,7 @@ function runHoltWintersAdditive(
 export type ForecastModelKey =
     | "LINEAR_REGRESSION"
     | "SIMPLE_MOVING_AVERAGE"
+    | "WEIGHTED_MOVING_AVERAGE"
     | "EXPONENTIAL_SMOOTHING"
     | "HOLT_WINTERS"
     | "ARIMA"
@@ -150,6 +169,9 @@ export function runForecastEngine(
         case "SIMPLE_MOVING_AVERAGE":
             return { forecasted: runSMA(history, horizon), modelActuallyUsed: "SIMPLE_MOVING_AVERAGE" };
 
+        case "WEIGHTED_MOVING_AVERAGE":
+            return { forecasted: runWMA(history, horizon), modelActuallyUsed: "WEIGHTED_MOVING_AVERAGE" };
+
         case "EXPONENTIAL_SMOOTHING":
             return { forecasted: runHoltLinear(history, horizon), modelActuallyUsed: "EXPONENTIAL_SMOOTHING" };
 
@@ -159,10 +181,16 @@ export function runForecastEngine(
 
         case "AUTO": {
             const nonZeroCount = history.filter((v) => v > 0).length;
+            // 1. Seasonal if we have a full year
             if (nonZeroCount >= 12)
                 return { forecasted: runHoltWintersAdditive(history, horizon), modelActuallyUsed: "HOLT_WINTERS" };
-            if (nonZeroCount >= 3)
+            // 2. Trend smoothing if we have 6+ months
+            if (nonZeroCount >= 6)
                 return { forecasted: runHoltLinear(history, horizon), modelActuallyUsed: "EXPONENTIAL_SMOOTHING" };
+            // 3. WMA for short history (3-5 months) - more stable than Linear Reg
+            if (nonZeroCount >= 3)
+                return { forecasted: runWMA(history, horizon), modelActuallyUsed: "WEIGHTED_MOVING_AVERAGE" };
+            // 4. Default fallback
             return { forecasted: runLinearRegression(history, horizon), modelActuallyUsed: "LINEAR_REGRESSION" };
         }
 

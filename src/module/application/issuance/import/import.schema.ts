@@ -3,7 +3,7 @@ import { IssuanceType } from "../../../../generated/prisma/enums.js";
 
 export const IssuanceImportRowSchema = z.object({
     "PRODUCT CODE": z.string().min(1),
-    "TOTAL": z.coerce.number().default(0),
+    "TOTAL SALES": z.coerce.number().default(0),
 });
 
 export type IssuanceImportRow = z.infer<typeof IssuanceImportRowSchema>;
