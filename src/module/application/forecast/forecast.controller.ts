@@ -7,6 +7,7 @@ import {
     DeleteForecastByPeriodSchema,
     FinalizeForecastSchema,
     QueryForecastSchema,
+    UpsertSafetyRatioSchema,
 } from "./forecast.schema.js";
 import { ApiError } from "../../../lib/errors/api.error.js";
 
@@ -87,6 +88,21 @@ export class ForecastController {
         await CreateLogger({
             activity: "UPDATE",
             description: `${Table} Manual Update: Product ID ${body.product_id} for ${body.month}/${body.year}`,
+            email: session.email,
+        } satisfies CreateLoggingActivityDTO);
+
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async upsertSafetyRatio(c: Context) {
+        const body = c.get("body");
+        const session = c.get("session");
+
+        const result = await ForecastService.upsertSafetyRatio(body);
+
+        await CreateLogger({
+            activity: "UPDATE",
+            description: `${Table} Upsert %SAFETY: Product ID ${body.product_id} → ${body.add_ss_ratio}%`,
             email: session.email,
         } satisfies CreateLoggingActivityDTO);
 

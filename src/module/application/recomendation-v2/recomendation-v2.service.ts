@@ -23,9 +23,9 @@ export class RecomendationV2Service {
         } = query;
         const { skip, take: limit } = GetPagination(page, take);
 
-        const now = new Date();
-        const currentMonth = month ?? now.getMonth() + 1;
-        const currentYear = year ?? now.getFullYear();
+        const now = new Date(Date.UTC(2026, 2, 1)); // Mocked: March 2026
+        const currentMonth = month ?? 3;
+        const currentYear = year ?? 2026;
 
         const salesPeriods: { month: number; year: number; key: string }[] = [];
         for (let i = sales_months; i >= 1; i--) {
@@ -143,18 +143,21 @@ export class RecomendationV2Service {
                     SELECT
                         f.product_id,
                         SUM(f.final_forecast) as total_forecast_horizon,
-                        p.safety_percentage
+                        COALESCE(ss.additional_ratio, 0) as add_ss_ratio
                     FROM "forecasts" f
                     JOIN "products" p ON p.id = f.product_id
+                    LEFT JOIN "safety_stock" ss ON ss.product_id = f.product_id 
+                        AND ss.month = ${currentMonth} 
+                        AND ss.year = ${currentYear}
                     WHERE f.is_latest = true
                       AND (f.year * 12 + f.month) >= ${fcStart}
                       AND (f.year * 12 + f.month) <= ${fcEnd}
-                    GROUP BY f.product_id, p.safety_percentage
+                    GROUP BY f.product_id, ss.additional_ratio
                 ),
                 prod_dynamic_ss AS (
                     SELECT 
                         product_id,
-                        (total_forecast_horizon / ${forecast_months}::numeric * safety_percentage) as dynamic_ss_qty
+                        (total_forecast_horizon / ${forecast_months}::numeric * (add_ss_ratio / 100.0)) as dynamic_ss_qty
                     FROM prod_stats
                 ),
                 rm_forecast_agg AS (
@@ -345,7 +348,7 @@ export class RecomendationV2Service {
                 LEFT JOIN rm_stock_ss_agg sa ON sa.raw_mat_id = rm.id
                 WHERE ${typeFilter}
                   AND rm.deleted_at IS NULL
-                  AND rm.barcode IS DISTINCT FROM 'FO-ALK'
+                --   AND rm.barcode IS DISTINCT FROM 'FO-ALK'
                   ${searchFilter}
             ) AS base
             ORDER BY 
@@ -375,7 +378,7 @@ export class RecomendationV2Service {
             LEFT JOIN "unit_raw_materials" urm ON urm.id = rm.unit_id
             WHERE ${typeFilter}
               AND rm.deleted_at IS NULL
-              AND rm.barcode IS DISTINCT FROM 'FO-ALK'
+            --   AND rm.barcode IS DISTINCT FROM 'FO-ALK'
               ${searchFilter}
         `;
 
@@ -422,14 +425,14 @@ export class RecomendationV2Service {
                 stock_fg_x_resep: Number(r.stock_fg_x_resep),
                 safety_stock_x_resep: Number(r.safety_stock_x_resep),
                 forecast_needed: Number(r.forecast_needed),
-                recommendation_quantity: Number(r.recommendation_val),
+                recommendation_quantity: workOrder?.id ? Number(r.recommendation_val) : null,
 
                 // Work Order / Consolidation data
                 work_order_id: workOrder?.id || null,
                 work_order_status: workOrder?.status || null,
                 work_order_pic_id: workOrder?.pic_id || null,
                 work_order_quantity: workOrder?.quantity ? Number(workOrder.quantity) : null,
-                work_order_horizon: horizon || null,
+                work_order_horizon: workOrder?.horizon || null,
 
                 sales,
                 needs,
@@ -603,7 +606,7 @@ export class RecomendationV2Service {
             fcEndY += 1;
         }
 
-        const now = new Date();
+        const now = new Date(Date.UTC(2026, 2, 1)); // Mocked: March 2026
         const fcStart = fcStartY * 12 + fcStartM;
         const fcEnd = fcEndY * 12 + fcEndM;
 
@@ -645,7 +648,7 @@ export class RecomendationV2Service {
                                  WHERE f2.product_id = p.id
                                    AND (f2.year * 12 + f2.month) >= ${fcStart}
                                    AND (f2.year * 12 + f2.month) <= ${fcEnd}
-                                ) / ${horizon}::numeric * p.safety_percentage
+                                ) / ${horizon}::numeric * (COALESCE(ss.additional_ratio, 0) / 100.0)
                             ) * rec.quantity *
                             CASE WHEN rm2.type = 'FO' OR urm2.name ILIKE ANY(ARRAY['ml', 'l', 'liter', 'ML']) THEN COALESCE(ps.size, 1) ELSE 1 END
                         )::numeric AS total
@@ -654,6 +657,9 @@ export class RecomendationV2Service {
                     LEFT JOIN "unit_raw_materials" urm2 ON urm2.id = rm2.unit_id
                     JOIN "products" p ON p.id = rec.product_id
                     LEFT JOIN "product_size" ps ON ps.id = p.size_id
+                    LEFT JOIN "safety_stock" ss ON ss.product_id = p.id 
+                        AND ss.month = ${month} 
+                        AND ss.year = ${year}
                     WHERE rec.is_active = true
                     GROUP BY rec.raw_mat_id
                 ),
@@ -711,7 +717,7 @@ export class RecomendationV2Service {
             LEFT JOIN fg_agg fg ON fg.raw_mat_id = rm.id
             WHERE ${typeFilter}
               AND rm.deleted_at IS NULL
-              AND rm.barcode IS DISTINCT FROM 'FO-ALK'
+            --   AND rm.barcode IS DISTINCT FROM 'FO-ALK'
             ON CONFLICT (raw_mat_id, month, year) DO UPDATE SET
                 horizon = EXCLUDED.horizon,
                 quantity = EXCLUDED.quantity,
@@ -774,7 +780,7 @@ export class RecomendationV2Service {
         meta.sales_periods?.forEach((p: any) => {
             const yearShort = String(p.year).slice(-2);
             allColumns.push({
-                header: `S ${monthsShort[p.month - 1]?.toLocaleUpperCase()}${yearShort}`,
+                header: `SALES ${monthsShort[p.month - 1]?.toLocaleUpperCase()}${yearShort}`,
                 key: `sales_${p.key}`,
                 width: 15,
                 uiId: "sales_history",
@@ -785,7 +791,7 @@ export class RecomendationV2Service {
         meta.forecast_periods?.forEach((p: any) => {
             const yearShort = String(p.year).slice(-2);
             allColumns.push({
-                header: `N ${monthsShort[p.month - 1]?.toLocaleUpperCase()}${yearShort}`,
+                header: `NEED BUY ${monthsShort[p.month - 1]?.toLocaleUpperCase()}${yearShort}`,
                 key: `need_${p.key}`,
                 width: 15,
                 uiId: "needs_buy",
@@ -817,15 +823,15 @@ export class RecomendationV2Service {
             filteredColumns.sort((a, b) => {
                 const uiIdA = a.uiId || "";
                 const uiIdB = b.uiId || "";
-                
+
                 const indexA = orderArr.indexOf(uiIdA);
                 const indexB = orderArr.indexOf(uiIdB);
-                
+
                 if (indexA !== -1 && indexB !== -1) {
                     if (indexA === indexB) return 0; // Same group (like barcode & material)
                     return indexA - indexB;
                 }
-                
+
                 if (indexA !== -1) return -1;
                 if (indexB !== -1) return 1;
                 return 0;

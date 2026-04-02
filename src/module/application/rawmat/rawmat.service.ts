@@ -137,11 +137,23 @@ export class RawMaterialService {
             if (!findSupplier) throw new ApiError(404, "Supplier tidak ditemukan");
         }
 
+        if (payload.barcode !== undefined && payload.barcode !== null) {
+            const existingBarcode = await prisma.rawMaterial.findFirst({
+                where: {
+                    barcode: String(payload.barcode),
+                    id: { not: id },
+                },
+            });
+            if (existingBarcode)
+                throw new ApiError(400, "Barcode telah digunakan, tolong ubah dengan barcode lainnya");
+        }
+
         return prisma.$transaction(async (tx) => {
             const exists = await tx.rawMaterial.findFirst({ where: { id, deleted_at: null } });
             if (!exists) throw new ApiError(404, "Raw material tidak ditemukan");
 
             const data: Prisma.RawMaterialUpdateInput = {
+                ...(payload.barcode !== undefined && { barcode: payload.barcode }),
                 ...(payload.name && { name: payload.name }),
                 ...(payload.price !== undefined && { price: payload.price }),
                 ...(payload.min_buy !== undefined && { min_buy: payload.min_buy }),

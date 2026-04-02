@@ -9,6 +9,7 @@ import {
     ResponseForecastDTO,
     RunForecastDTO,
     UpdateManualForecastDTO,
+    UpsertSafetyRatioDTO,
 } from "./forecast.schema.js";
 import { runForecastEngine } from "./engines.js";
 
@@ -18,7 +19,6 @@ const PRODUCT_SELECT = {
     id: true,
     code: true,
     name: true,
-    z_value: true,
     product_type: { select: { slug: true } },
     size: { select: { size: true } },
     distribution_percentage: true,
@@ -172,7 +172,7 @@ export class ForecastService {
                     month: m.month,
                     year: m.year,
                     base_forecast: projected,
-                    final_forecast: projected, // Statistical buffer added dynamically in get()
+                    final_forecast: projected,
                     trend: ForecastService.trend(projected, lastActual),
                     model_used: modelActuallyUsed as $Enums.ForecastModel,
                     system_ratio: Number(system_ratio.toFixed(4)),
@@ -188,7 +188,6 @@ export class ForecastService {
             return {
                 message: `Tidak ada data forecast yang diproses. ${skippedProducts.length} produk dilewati.`,
                 processed_records: 0,
-                safety_stock_records: 0,
                 skipped_products: skippedProducts,
             };
         }
@@ -269,7 +268,6 @@ export class ForecastService {
         return {
             message: `Forecast berhasil disimpan: ${batch.length} record.`,
             processed_records: batch.length,
-            safety_stock_records: 0,
             skipped_products: skippedProducts,
         };
     }
@@ -346,35 +344,6 @@ export class ForecastService {
                     },
                 });
             }
-
-            // Recalculate safety stock for this period
-            const zValue = Number(product.z_value ?? 1.65);
-            // On manual update MAE tracking is deferred; use existing MAE or 0
-            const existingSS = await prisma.safetyStock.findUnique({
-                where: { product_id_month_year: { product_id, month, year } },
-            });
-            const mae = existingSS ? Number(existingSS.mean_absolute_error) : 0;
-            const ssQty = zValue * mae;
-            const ssRatio = resolvedFinal > 0 ? ssQty / resolvedFinal : 0;
-
-            await prisma.safetyStock.upsert({
-                where: { product_id_month_year: { product_id, month, year } },
-                create: {
-                    product_id,
-                    month,
-                    year,
-                    mean_absolute_error: mae,
-                    safety_stock_quantity: ssQty,
-                    safety_stock_ratio: ssRatio,
-                    z_value_used: zValue,
-                    additional_ratio: 0,
-                },
-                update: {
-                    safety_stock_quantity: ssQty,
-                    safety_stock_ratio: ssRatio,
-                    z_value_used: zValue,
-                },
-            });
         } else {
             // Propagate base forecast across 12-month horizon
             const horizon = 12;
@@ -385,7 +354,6 @@ export class ForecastService {
 
             await prisma.$transaction(
                 async (tx) => {
-                    // Mark all existing records for this product in the range as not-latest
                     await tx.$executeRawUnsafe(`
                     UPDATE "forecasts"
                     SET is_latest = false
@@ -412,30 +380,6 @@ export class ForecastService {
                         forecast_for, generated_in, is_actionable,
                         created_at, updated_at
                     ) VALUES ${forecastValues}
-                `);
-
-                    const ssValues = monthsRange
-                        .map((m) => {
-                            const zValue = Number(product.z_value ?? 1.65);
-                            // MAE is 0 on manual update — SS will be refined on next engine run
-                            const ssRatio = 0;
-                            return `(${product_id}, ${m.month}, ${m.year}, 0, 0, ${ssRatio}, ${zValue.toFixed(3)}, 0, '${nowIso}', '${nowIso}')`;
-                        })
-                        .join(", ");
-
-                    await tx.$executeRawUnsafe(`
-                    INSERT INTO "safety_stock" (
-                        product_id, month, year,
-                        mean_absolute_error, safety_stock_quantity, safety_stock_ratio,
-                        z_value_used, additional_ratio,
-                        created_at, updated_at
-                    ) VALUES ${ssValues}
-                    ON CONFLICT (product_id, month, year)
-                    DO UPDATE SET
-                        safety_stock_quantity = EXCLUDED.safety_stock_quantity,
-                        safety_stock_ratio    = EXCLUDED.safety_stock_ratio,
-                        z_value_used          = EXCLUDED.z_value_used,
-                        updated_at            = EXCLUDED.updated_at
                 `);
                 },
                 { timeout: 30000 },
@@ -472,7 +416,7 @@ export class ForecastService {
 
         const searchRaw = query.search ? `%${query.search}%` : null;
 
-        // Load ForecastPercentage for display in UI (retained for reference)
+        // Load ForecastPercentage for display in UI
         const rangePercentages = await prisma.forecastPercentage.findMany({
             where: { OR: monthsWindow.map((m) => ({ month: m.month, year: m.year })) },
         });
@@ -500,25 +444,23 @@ export class ForecastService {
                 id: number;
                 code: string | null;
                 name: string;
-                z_value: number;
                 size: number | null;
                 product_type_name: string | null;
                 unit_name: string | null;
                 distribution_percentage: number | null;
                 safety_percentage: number | null;
                 forecasts_data: string | null;
-                safety_stock_data: string | null;
                 current_stock: number | null;
                 m1_final_forecast: number | null;
                 m1_base_forecast: number | null;
                 sys_m0_base_forecast: number | null;
+                safety_stock_data: string | null;
             }[]
         >`
             SELECT
                 p.id,
                 p.code,
                 p.name,
-                p.z_value,
                 ps.size            AS "size",
                 pt.name            AS "product_type_name",
                 u.name             AS "unit_name",
@@ -566,16 +508,17 @@ export class ForecastService {
                     SELECT row_to_json(ss)
                     FROM (
                         SELECT
-                            safety_stock_quantity,
-                            safety_stock_ratio,
-                            mean_absolute_error,
-                            z_value_used,
-                            additional_ratio,
-                            created_at
-                        FROM "safety_stock"
-                        WHERE product_id = p.id
-                        ORDER BY created_at DESC
-                        LIMIT 1
+                            ss.additional_ratio,
+                            ss.safety_stock_ratio,
+                            ss.mean_absolute_error,
+                            ss.z_value_used,
+                            ss.month,
+                            ss.year,
+                            ss.created_at
+                        FROM "safety_stock" ss
+                        WHERE ss.product_id = p.id
+                          AND ss.month = ${startMonth}
+                          AND ss.year = ${startYear}
                     ) ss
                 ) AS "safety_stock_data"
 
@@ -663,7 +606,7 @@ export class ForecastService {
                 system_ratio: string | null;
                 model_used: string | null;
                 is_actionable: boolean;
-                actual_sales: string | null; // This might be null if no forecast entry exists
+                actual_sales: string | null;
             }[] =
                 typeof p.forecasts_data === "string"
                     ? JSON.parse(p.forecasts_data)
@@ -671,10 +614,12 @@ export class ForecastService {
 
             const forecastByKey = new Map(rawForecasts.map((f) => [`${f.year}-${f.month}`, f]));
 
-            const ss =
+            // Parse safety stock data for add_ss_ratio
+            const ssRaw =
                 typeof p.safety_stock_data === "string"
                     ? JSON.parse(p.safety_stock_data)
                     : p.safety_stock_data;
+            const addSsRatio = ssRaw ? Number(ssRaw.additional_ratio ?? 0) : 0;
 
             const monthly_data: ResponseForecastDTO["monthly_data"] = monthsWindow.map((m) => {
                 const forecast = forecastByKey.get(`${m.year}-${m.month}`);
@@ -685,9 +630,15 @@ export class ForecastService {
                     year: m.year,
                     period: `${m.month}/${m.year}`,
                     base_forecast: Number(forecast?.base_forecast ?? 0),
-                    final_forecast:
-                        forecast?.final_forecast != null ? Number(forecast.final_forecast) : null,
-                    deviation: null,
+                    final_forecast: (() => {
+                        const base = Number(forecast?.base_forecast ?? 0);
+                        const manualFinal =
+                            forecast?.final_forecast != null ? Number(forecast.final_forecast) : null;
+
+                        // Dynamic Calculation: (Manual Final ?? Base) * (1 + ratio / 100)
+                        const currentVal = manualFinal ?? base;
+                        return currentVal * (1 + addSsRatio / 100);
+                    })(),
                     trend: forecast?.trend ?? "STABLE",
                     status: forecast?.status ?? null,
                     is_current_month: m.is_current_month,
@@ -705,54 +656,15 @@ export class ForecastService {
                               (Number(pctMap.get(`${m.year}-${m.month}`)!.value) * 100).toFixed(2),
                           )
                         : null,
-                    safety_stock_pct: null, // filled in below after MAE is computed
                 };
             });
 
             const anchorActual = actualSalesMap.get(`${p.id}|${anchorRefMonth}|${anchorRefYear}`);
 
-            // Deviation: |base_forecast - prev_actual| (prev_actual = anchor for M1, previous month for rest)
-            monthly_data.forEach((m, idx) => {
-                const prevActual =
-                    idx > 0 ? monthly_data[idx - 1]?.actual_sales : (anchorActual ?? null);
-                m.deviation =
-                    prevActual != null
-                        ? Math.abs(Number(m.base_forecast) - Number(prevActual))
-                        : null;
-            });
-
-            // 4. Dynamic MAE: Average of Deviations (|Base - PrevActual|) across the visible horizon.
-            const zVal = Number(p.z_value ?? 1.65);
-            const validDeviations = monthly_data.filter((m) => m.deviation !== null);
-            const computedMae =
-                validDeviations.length > 0
-                    ? validDeviations.reduce((sum, m) => sum + m.deviation!, 0) /
-                      validDeviations.length
-                    : ss?.mean_absolute_error
-                      ? Number(ss.mean_absolute_error)
-                      : 0;
-
-            // SS quantity = MAE × z_value
-            const computedSsQty = computedMae * zVal;
-
-            // 5. Per-month %SAFETY = (SS_qty / Base Forecast) + 35%
-            monthly_data.forEach((m) => {
-                const base = Number(m.base_forecast);
-
-                // %SAFETY calculation (Ratio)
-                m.safety_stock_pct =
-                    base > 0 ? Number((computedSsQty / base + 0.35).toFixed(4)) : 0.35;
-
-                // Dynamically set Final Forecast for non-finalized (DRAFT/null) records
-                if (!m.status || m.status === "DRAFT") {
-                    m.final_forecast = Math.abs(base * (1 + m.safety_stock_pct));
-                }
-            });
-
             const m1MonthData = monthly_data.find(
                 (m) => m.month === startMonth && m.year === startYear,
             );
-            const m1Forecast = m1MonthData?.final_forecast ?? 0;
+            const m1Forecast = m1MonthData?.final_forecast ?? m1MonthData?.base_forecast ?? 0;
             const currentStock = Number(p.current_stock ?? 0);
             const needProduce = Math.max(0, m1Forecast - currentStock);
 
@@ -761,16 +673,12 @@ export class ForecastService {
                 0,
             );
 
-            // Total Demand now matches Total Forecast as buffer is integrated
-            const totalDemand = totalForecast;
-
             return {
                 product_id: p.id,
                 product_code: p.code,
                 product_name: p.name,
                 product_type: p.product_type_name ?? "",
                 product_size: `${p.size ?? ""} ${p.unit_name ?? ""}`.trim(),
-                z_value: Number(p.z_value ?? 0),
                 distribution_percentage: p.distribution_percentage
                     ? Number((Number(p.distribution_percentage) * 100).toFixed(2))
                     : 0,
@@ -780,24 +688,13 @@ export class ForecastService {
                 current_stock: currentStock,
                 need_produce: needProduce,
                 total_forecast: totalForecast,
-                total_demand: totalDemand,
                 anchor_actual_sales: anchorActual ?? null,
                 anchor_period: `${anchorRefMonth}/${anchorRefYear}`,
+                add_ss_ratio: addSsRatio,
+                safety_stock: (totalForecast / (query.horizon ?? 12)) * (addSsRatio / 100),
+                total_demand:
+                    totalForecast + (totalForecast / (query.horizon ?? 12)) * (addSsRatio / 100),
                 monthly_data,
-                safety_stock_summary: {
-                    safety_stock_quantity:
-                        ss?.safety_stock_quantity != null ? Number(ss.safety_stock_quantity) : null,
-                    safety_stock_ratio:
-                        ss?.safety_stock_ratio != null ? Number(ss.safety_stock_ratio) : null,
-                    mean_absolute_error:
-                        ss?.mean_absolute_error != null ? Number(ss.mean_absolute_error) : null,
-                    z_value_used: ss?.z_value_used != null ? Number(ss.z_value_used) : null,
-                    additional_ratio:
-                        ss?.additional_ratio != null ? Number(ss.additional_ratio) : null,
-                    last_updated: ss?.created_at ? new Date(ss.created_at) : null,
-                    computed_mae: Number(computedMae.toFixed(2)),
-                    computed_ss_quantity: Number(computedSsQty.toFixed(2)),
-                },
             };
         });
 
@@ -863,6 +760,47 @@ export class ForecastService {
             if (err?.code === "P2025") throw new ApiError(404, "Data forecast tidak ditemukan");
             throw err;
         }
+    }
+
+    // ── UPSERT SAFETY RATIO (%SAFETY / add_ss_ratio) ──────────────────────────
+
+    static async upsertSafetyRatio(body: UpsertSafetyRatioDTO) {
+        const { product_id, month, year, add_ss_ratio } = body;
+
+        const product = await prisma.product.findUnique({
+            where: { id: product_id },
+            select: { id: true, z_value: true },
+        });
+        if (!product) throw new ApiError(404, "Produk tidak ditemukan.");
+
+        const zValue = Number(product.z_value ?? 1.65);
+
+        const result = await prisma.safetyStock.upsert({
+            where: {
+                product_id_month_year: { product_id, month, year },
+            },
+            create: {
+                product_id,
+                month,
+                year,
+                mean_absolute_error: 0,
+                safety_stock_quantity: 0,
+                safety_stock_ratio: 0,
+                z_value_used: zValue,
+                additional_ratio: add_ss_ratio,
+            },
+            update: {
+                additional_ratio: add_ss_ratio,
+            },
+        });
+
+        return {
+            product_id,
+            month,
+            year,
+            add_ss_ratio: Number(result.additional_ratio),
+            message: `%SAFETY berhasil diperbarui: ${add_ss_ratio}% untuk ${month}/${year}.`,
+        };
     }
 
     // ── PRIVATE HELPERS ───────────────────────────────────────────────────────

@@ -79,6 +79,15 @@ export const UpdateManualForecastSchema = z.object({
     additional_ratio: z.coerce.number().optional(),
 });
 
+// ─── Upsert Safety Ratio (%SAFETY / add_ss_ratio) ─────────────────────────────
+
+export const UpsertSafetyRatioSchema = z.object({
+    product_id: z.coerce.number().int().positive(),
+    month: z.coerce.number().int().min(1).max(12),
+    year: z.coerce.number().int().min(2000).max(2100),
+    add_ss_ratio: z.coerce.number(),
+});
+
 // ─── Types / DTOs ──────────────────────────────────────────────────────────────
 
 export type RunForecastDTO = z.infer<typeof RunForecastSchema>;
@@ -88,6 +97,7 @@ export type DeleteForecastByPeriodDTO = z.infer<typeof DeleteForecastByPeriodSch
 export type RequestReconcileDTO = z.infer<typeof RequestReconcileSchema>;
 export type RequestAddRatioForecastDTO = z.infer<typeof RequestAddRatioForecastSchema>;
 export type UpdateManualForecastDTO = z.infer<typeof UpdateManualForecastSchema>;
+export type UpsertSafetyRatioDTO = z.infer<typeof UpsertSafetyRatioSchema>;
 
 export type ResponseForecastDTO = {
     product_id: number;
@@ -95,22 +105,22 @@ export type ResponseForecastDTO = {
     product_name: string;
     product_type: string;
     product_size: string;
-    z_value: number;
     distribution_percentage: number | null;
     safety_percentage: number | null;
     current_stock: number;
     need_produce: number;
     total_forecast: number;
-    total_demand: number;
     anchor_actual_sales: number | null;
     anchor_period: string | null;
+    add_ss_ratio: number;
+    safety_stock: number;
+    total_demand: number;
     monthly_data: Array<{
         month: number;
         year: number;
         period: string;
         base_forecast: number;
         final_forecast: number | null;
-        deviation: number | null;
         trend: string;
         status: string | null;
         is_current_month: boolean;
@@ -120,18 +130,5 @@ export type ResponseForecastDTO = {
         model_used: string | null;
         actual_sales: number | null;
         percentage_value: number | null;
-        /** (MAE × z_value) / final_forecast + 0.35 — computed dynamically at query time */
-        safety_stock_pct: number | null;
     }>;
-    safety_stock_summary: {
-        safety_stock_quantity: number | null;
-        safety_stock_ratio: number | null;
-        mean_absolute_error: number | null;
-        z_value_used: number | null;
-        additional_ratio: number | null;
-        last_updated: Date | null;
-        /** MAE recomputed from visible horizon window (may differ from stored if horizon changes) */
-        computed_mae: number;
-        computed_ss_quantity: number;
-    } | null;
 };

@@ -7,6 +7,7 @@ import {
     FinalizeForecastSchema,
     RunForecastSchema,
     UpdateManualForecastSchema,
+    UpsertSafetyRatioSchema,
 } from "./forecast.schema.js";
 
 export const ForecastRoutes = new Hono();
@@ -18,6 +19,7 @@ ForecastRoutes.post("/run", validateBody(RunForecastSchema), ForecastController.
 ForecastRoutes.patch("/finalize", validateBody(FinalizeForecastSchema), ForecastController.finalize);
 ForecastRoutes.delete("/period", validateBody(DeleteForecastByPeriodSchema), ForecastController.deleteByPeriod);
 ForecastRoutes.patch("/manual-update", validateBody(UpdateManualForecastSchema), ForecastController.updateManual);
+ForecastRoutes.patch("/safety-ratio", validateBody(UpsertSafetyRatioSchema), ForecastController.upsertSafetyRatio);
 
 ForecastRoutes.get("/", ForecastController.list);
 ForecastRoutes.post("/", validateBody(RunForecastSchema), ForecastController.run);

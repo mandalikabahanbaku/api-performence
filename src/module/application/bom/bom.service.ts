@@ -14,7 +14,7 @@ export class BOMService {
         const { skip, take: limit } = GetPagination(page, take);
 
         // 1. Identify Month Ranges
-        const now = new Date();
+        const now = new Date(Date.UTC(2026, 2, 1)); // Mocked: March 2026
         const currentYear = now.getUTCFullYear();
         const currentMonth = now.getUTCMonth() + 1;
 
@@ -77,6 +77,7 @@ export class BOMService {
                 r.quantity::float8 as recipe_qty,
                 p.id as p_id, p.code as p_code, p.name as p_name, p.gender::text as p_gender,
                 p.safety_percentage::float8 as p_safety_percentage,
+                COALESCE(ss.additional_ratio, 0)::float8 as p_add_ss_ratio,
                 pt.name as pt_name, ps.size as ps_val, u.name as u_name,
                 rm.id as rm_id, rm.barcode as rm_barcode, rm.name as rm_name, 
                 urm.name as urm_name,
@@ -100,6 +101,9 @@ export class BOMService {
             FROM recipes r
             JOIN products p ON p.id = r.product_id
             JOIN raw_materials rm ON rm.id = r.raw_mat_id
+            LEFT JOIN safety_stock ss ON ss.product_id = p.id 
+                AND ss.month = ${currentMonth} 
+                AND ss.year = ${currentYear}
             LEFT JOIN product_types pt ON pt.id = p.type_id
             LEFT JOIN product_size ps ON ps.id = p.size_id
             LEFT JOIN unit_of_materials u ON u.id = p.unit_id
@@ -159,7 +163,13 @@ export class BOMService {
                 // Calculate Safety Stock on the fly based on horizon (forecast_months)
                 const totalForecastForSS = fscRange.reduce((acc, f) => acc + f.value, 0);
                 const avgForecastForSS = totalForecastForSS / forecast_months;
-                const calculatedSS = avgForecastForSS * Number(r.p_safety_percentage || 0);
+                
+                // Use new add_ss_ratio if available, else fallback to legacy safety_percentage
+                const safetyRatio = r.p_add_ss_ratio > 0 
+                    ? (r.p_add_ss_ratio / 100) 
+                    : Number(r.p_safety_percentage || 0);
+
+                const calculatedSS = avgForecastForSS * safetyRatio;
 
                 // Calculate Need Produce for entire horizon
                 let runningStock = Number(r.p_current_stock ?? 0);
@@ -260,7 +270,7 @@ export class BOMService {
 
         const { forecast_months = 3 } = query || {};
 
-        const now = new Date();
+        const now = new Date(Date.UTC(2026, 2, 1)); // Mocked: March 2026
         const currentYear = now.getUTCFullYear();
         const currentMonth = now.getUTCMonth() + 1;
 
@@ -306,6 +316,9 @@ export class BOMService {
                             product_type: true,
                             size: true,
                             product_inventories: {
+                                where: { month: currentMonth, year: currentYear },
+                            },
+                            safety_stock: {
                                 where: { month: currentMonth, year: currentYear },
                             },
                             forecasts: {
@@ -363,22 +376,28 @@ export class BOMService {
 
                 const productForecasts = r.products.forecasts || [];
                 const sumProductForecast = productForecasts.reduce(
-                    (sum, f) => sum + Math.round(Number(f.final_forecast)),
+                    (sum: number, f: any) => sum + Math.round(Number(f.final_forecast)),
                     0,
                 );
                 const avgProductForecast = sumProductForecast / forecast_months;
-                const productSS = Math.round(avgProductForecast * Number(r.products.safety_percentage || 0));
+                
+                const ssRatio = Number(r.products.safety_stock?.[0]?.additional_ratio ?? 0);
+                const safetyRatio = ssRatio > 0 
+                    ? (ssRatio / 100) 
+                    : Number(r.products.safety_percentage || 0);
+
+                const productSS = Math.round(avgProductForecast * safetyRatio);
 
                 // Calculate product-specific Need Produce for entire Horizon
                 const productStockDetail = r.products.product_inventories.reduce(
-                    (sum, pi) => sum + Number(pi.quantity),
+                    (sum: number, pi: any) => sum + Number(pi.quantity),
                     0,
                 );
                 let runningStockDetail = productStockDetail;
 
                 const productNeedProduce = forecastRange.map((p) => {
                     const fMatch = productForecasts.find(
-                        (f) => f.month === p.month && f.year === p.year,
+                        (f: any) => f.month === p.month && f.year === p.year,
                     );
                     const fValAtMonth = fMatch ? Math.round(Number(fMatch.final_forecast)) : 0;
                     const needAtMonth = Math.max(0, fValAtMonth - runningStockDetail);

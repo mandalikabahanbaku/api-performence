@@ -303,7 +303,10 @@ export class ProductService {
             LEFT JOIN product_types pt ON p.type_id = pt.id
             LEFT JOIN unit_of_materials u ON p.unit_id = u.id
             LEFT JOIN product_size ps ON p.size_id = ps.id
-            LEFT JOIN forecasts f_m1 ON f_m1.product_id = p.id AND f_m1.month = ${currentMonth} AND f_m1.year = ${currentYear}
+            LEFT JOIN forecasts f_m1 ON f_m1.product_id = p.id 
+                AND f_m1.month = ${currentMonth} 
+                AND f_m1.year = ${currentYear}
+                AND f_m1.is_latest = true
             ${whereClause}
             ORDER BY ${orderBy}
             LIMIT ${limit} OFFSET ${skip}

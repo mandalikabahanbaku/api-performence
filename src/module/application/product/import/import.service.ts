@@ -71,6 +71,30 @@ export class ProductImportService {
             };
         });
 
+        // === Validasi duplikat: kode produk sama tapi nama produk berbeda ===
+        const codeNameMap = new Map<string, Set<string>>();
+        for (const row of parsedRows) {
+            if (!row.code) continue;
+            const key = row.code.toUpperCase();
+            if (!codeNameMap.has(key)) {
+                codeNameMap.set(key, new Set());
+            }
+            codeNameMap.get(key)!.add(row.name.trim().toUpperCase());
+        }
+
+        // Tandai baris yang memiliki kode sama tapi nama berbeda sebagai tidak valid
+        for (const row of parsedRows) {
+            if (!row.code) continue;
+            const key = row.code.toUpperCase();
+            const names = codeNameMap.get(key);
+            if (names && names.size > 1) {
+                const allNames = [...names].join(", ");
+                row.errors.push(
+                    `Duplikat kode produk "${row.code}" ditemukan dengan nama berbeda: ${allNames}. Pastikan satu kode hanya memiliki satu nama produk.`
+                );
+            }
+        }
+
         const total = parsedRows.length;
         const invalid = parsedRows.filter((r) => r.errors.length > 0).length;
         const valid = total - invalid;

@@ -154,9 +154,12 @@ export class ProductController {
 
     static async detail(c: Context) {
         const id = c.req.param("id");
-        if (!id) throw new ApiError(400, "Kesalahan pada proses permintaan data");
+        const valId = Number(id);
+        if (!id || isNaN(valId)) {
+            throw new ApiError(400, "ID Produk tidak valid");
+        }
 
-        const result = await ProductService.detail(Number(id));
+        const result = await ProductService.detail(valId);
 
         return ApiResponse.sendSuccess(c, result, 200);
     }
