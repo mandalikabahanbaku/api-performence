@@ -14,7 +14,7 @@ export class BOMService {
         const { skip, take: limit } = GetPagination(page, take);
 
         // 1. Identify Month Ranges
-        const now = new Date(Date.UTC(2026, 2, 1)); // Mocked: March 2026
+        const now = new Date();
         const currentYear = now.getUTCFullYear();
         const currentMonth = now.getUTCMonth() + 1;
 
@@ -270,7 +270,7 @@ export class BOMService {
 
         const { forecast_months = 3 } = query || {};
 
-        const now = new Date(Date.UTC(2026, 2, 1)); // Mocked: March 2026
+        const now = new Date();
         const currentYear = now.getUTCFullYear();
         const currentMonth = now.getUTCMonth() + 1;
 

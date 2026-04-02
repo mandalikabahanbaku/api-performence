@@ -23,9 +23,9 @@ export class RecomendationV2Service {
         } = query;
         const { skip, take: limit } = GetPagination(page, take);
 
-        const now = new Date(Date.UTC(2026, 2, 1)); // Mocked: March 2026
-        const currentMonth = month ?? 3;
-        const currentYear = year ?? 2026;
+        const now = new Date();
+        const currentMonth = month ?? now.getMonth() + 1;
+        const currentYear = year ?? now.getFullYear();
 
         const salesPeriods: { month: number; year: number; key: string }[] = [];
         for (let i = sales_months; i >= 1; i--) {
@@ -606,7 +606,7 @@ export class RecomendationV2Service {
             fcEndY += 1;
         }
 
-        const now = new Date(Date.UTC(2026, 2, 1)); // Mocked: March 2026
+        const now = new Date();
         const fcStart = fcStartY * 12 + fcStartM;
         const fcEnd = fcEndY * 12 + fcEndM;
 
