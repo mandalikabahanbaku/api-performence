@@ -145,7 +145,7 @@ export class ForecastService {
         }
         const histPeriodFilter = histPeriods.map((p) => ({ month: p.month, year: p.year }));
 
-        const [anchorSalesCheck, historicalSales] = await Promise.all([
+        const [anchorM1Sales, anchorM0Sales, historicalSales] = await Promise.all([
             prisma.productIssuance.findMany({
                 where: {
                     product_id: { in: productIds },
@@ -153,14 +153,29 @@ export class ForecastService {
                     year: anchorYear,
                     type: "ALL",
                 },
-                select: { product_id: true },
+                select: { product_id: true, quantity: true },
+            }),
+            prisma.productIssuance.findMany({
+                where: {
+                    product_id: { in: productIds },
+                    month: start_month,
+                    year: start_year,
+                    type: "ALL",
+                },
+                select: { product_id: true, quantity: true },
             }),
             prisma.productIssuance.findMany({
                 where: { product_id: { in: productIds }, type: "ALL", OR: histPeriodFilter },
             }),
         ]);
 
-        const anchorSalesSet = new Set(anchorSalesCheck.map((s) => s.product_id));
+        const anchorSalesSet = new Set([
+            ...anchorM1Sales.map((s) => s.product_id),
+            ...anchorM0Sales.map((s) => s.product_id),
+        ]);
+        
+        const anchorM1Map = new Map(anchorM1Sales.map((s) => [s.product_id, Number(s.quantity)]));
+        const anchorM0Map = new Map(anchorM0Sales.map((s) => [s.product_id, Number(s.quantity)]));
         if (anchorSalesSet.size === 0) {
             throw new ApiError(
                 400,
@@ -227,14 +242,24 @@ export class ForecastService {
                 continue;
             }
 
-            const { forecasted, modelActuallyUsed, mae } = runForecastEngine(
+            const { forecasted, modelActuallyUsed, mae: engineMae } = runForecastEngine(
                 model_used,
                 history,
                 horizon,
             );
 
+            const m1Actual = anchorM1Map.get(product.id) ?? 0;
+            const m0Actual = anchorM0Map.get(product.id) ?? 0;
             const lastActual = history[history.length - 1] ?? 0;
             const firstForecastVal = forecasted[0] ?? 0;
+            
+            // Per requirement #9: "Forecast 1 maka gunakan Sales Actual M (Bulan ini)"
+            // Otherwise use M-1 (Jantung)
+            const resolvedAnchorActual = m1Actual > 0 ? m1Actual : m0Actual;
+            const deviation1 = Math.abs(firstForecastVal - resolvedAnchorActual);
+            
+            // Robust MAE Fallback: Ensure MAE is not 0 if there is any deviation
+            const mae = engineMae > 0 ? engineMae : (deviation1 > 0 ? deviation1 : 0);
             const system_ratio = lastActual > 0 ? (firstForecastVal - lastActual) / lastActual : 0;
 
             // Calculate Safety Stock (Mature Mother Formula)
