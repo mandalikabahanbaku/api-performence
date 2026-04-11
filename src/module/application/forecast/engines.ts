@@ -51,10 +51,11 @@ function runLinearRegression(series: number[], horizon: number): { forecasted: n
 // ─── Simple Moving Average ────────────────────────────────────────────────────
 
 function runSMA(series: number[], horizon: number, window = 3): { forecasted: number[]; mae: number } {
+    if (series.length === 0) return { forecasted: Array(horizon).fill(0), mae: 0 };
     const slice = series.slice(-window);
     const avg   = slice.length > 0 ? slice.reduce((a, b) => a + b, 0) / slice.length : 0;
     
-    // For MAE, we compare historical points to the final avg (simulating standard fit)
+    // MAE: Average deviation of history from this constant avg
     const mae = computeMAE(series, series.map(() => avg));
     
     return { forecasted: Array.from({ length: horizon }, () => avg), mae };
@@ -87,7 +88,7 @@ function runHoltLinear(
     if (series.length === 1) return { forecasted: Array(horizon).fill(series[0]), mae: 0 };
 
     let level = series[0]!;
-    let trend = (series[1] ?? 0) - (series[0] ?? 0);
+    let trend = series.length > 1 ? (series[1] ?? 0) - (series[0] ?? 0) : 0;
     const fitted: number[] = [level];
 
     for (let i = 1; i < series.length; i++) {
@@ -120,9 +121,11 @@ function runHoltWintersAdditive(
 
     let l: number = series[0]!;
     let t = 0;
+    // Initial trend estimate
     for (let i = 0; i < seasonLength; i++) {
         t += (Number(series[i + seasonLength] ?? series[i]) - Number(series[i])) / seasonLength;
     }
+    t /= seasonLength;
 
     const s: number[] = series.slice(0, seasonLength).map((v) => Number(v) - l);
     const fitted: number[] = [];

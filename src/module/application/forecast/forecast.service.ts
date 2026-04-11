@@ -195,6 +195,7 @@ export class ForecastService {
             forecast_for: string;
             generated_in: string;
             is_actionable: boolean;
+            absolute_error: number;
         }[] = [];
 
         const ssBatch: {
@@ -236,6 +237,16 @@ export class ForecastService {
             const firstForecastVal = forecasted[0] ?? 0;
             const system_ratio = lastActual > 0 ? (firstForecastVal - lastActual) / lastActual : 0;
 
+            // Calculate Safety Stock (Mature Mother Formula)
+            const zValue = Number(product.z_value ?? 1.65);
+            const leadTimeDays = Number(product.lead_time ?? 30);
+            const leadTimeFactor = Math.sqrt(leadTimeDays / 30);
+            
+            const ssQty = zValue * mae * leadTimeFactor; 
+            const totalFc = forecasted.reduce((a, b) => a + b, 0);
+            const avgFc = horizon > 0 ? totalFc / horizon : 0;
+            const ssRatio = avgFc > 0 ? (ssQty / avgFc) * 100 : 0;
+
             // Store monthly forecasts
             for (let i = 0; i < monthsRange.length; i++) {
                 const m = monthsRange[i]!;
@@ -254,18 +265,9 @@ export class ForecastService {
                     forecast_for: formatMonthISO(m.year, m.month),
                     generated_in: generatedIn.toISOString().slice(0, 10),
                     is_actionable: i === 0,
+                    absolute_error: isFinite(mae) ? mae : 0, // Storing MAE as the error metric
                 });
             }
-
-            // Calculate Safety Stock
-            const zValue = Number(product.z_value ?? 1.65);
-            const leadTimeDays = Number(product.lead_time ?? 30);
-            const leadTimeFactor = Math.sqrt(leadTimeDays / 30); // Normalized to months
-            
-            const ssQty = zValue * mae * leadTimeFactor; 
-            const totalFc = forecasted.reduce((a, b) => a + b, 0);
-            const avgFc = horizon > 0 ? totalFc / horizon : 0;
-            const ssRatio = avgFc > 0 ? (ssQty / avgFc) * 100 : 0;
 
             ssBatch.push({
                 product_id: product.id,
@@ -296,7 +298,7 @@ export class ForecastService {
             for (let ci = 0; ci < batch.length; ci += CHUNK_SIZE) {
                 const chunk = batch.slice(ci, ci + CHUNK_SIZE);
 
-                const valueRows = chunk.map((f) => {
+                const valueRows = chunk.map((f: any) => {
                     const trend = f.trend;
                     const model = f.model_used;
                     return [
@@ -305,6 +307,7 @@ export class ForecastService {
                         `${f.base_forecast}, ${f.final_forecast}, 1, true,`,
                         `'${model}'::"ForecastModel", ${f.system_ratio}, ${f.additional_ratio},`,
                         `'${f.forecast_for}'::date, '${f.generated_in}'::date, ${f.is_actionable},`,
+                        `${f.absolute_error},`,
                         `'${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`,
                     ].join(" ");
                 }).join(",\n");
@@ -315,6 +318,7 @@ export class ForecastService {
                         base_forecast, final_forecast, version, is_latest,
                         model_used, system_ratio, additional_ratio,
                         forecast_for, generated_in, is_actionable,
+                        absolute_error,
                         created_at, updated_at
                     ) VALUES ${valueRows}
                     ON CONFLICT (product_id, month, year)
@@ -331,6 +335,7 @@ export class ForecastService {
                         forecast_for     = EXCLUDED.forecast_for,
                         generated_in     = EXCLUDED.generated_in,
                         is_actionable    = EXCLUDED.is_actionable,
+                        absolute_error   = EXCLUDED.absolute_error,
                         updated_at       = EXCLUDED.updated_at
                 `);
             }
