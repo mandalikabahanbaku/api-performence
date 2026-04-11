@@ -1,6 +1,6 @@
-// import.service.ts
 import { randomUUID } from "crypto";
 import prisma from "../../../../config/prisma.js";
+import { Prisma } from "../../../../generated/prisma/client.js";
 import {
     RecipeImportPreviewDTO,
     RecipeImportRowSchema,
@@ -19,56 +19,56 @@ type ImportCachePayload = {
 
 export class RecipeImportService {
     private static async findProduct(code: string) {
-        return await prisma.product.findUnique({
-            where: {
-                code,
-            },
+        return prisma.product.findUnique({
+            where: { code },
             select: {
                 id: true,
                 name: true,
                 code: true,
-                size: {
-                    select: { size: true },
-                },
-                unit: {
-                    select: {
-                        name: true,
-                    },
-                },
-                product_type: {
-                    select: {
-                        name: true,
-                    },
-                },
-            },
-        });
-    }
-    private static async findMaterial(barcode: string) {
-        return await prisma.rawMaterial.findUnique({
-            where: {
-                barcode,
-            },
-            select: {
-                id: true,
-                name: true,
-                barcode: true,
+                size: { select: { size: true } },
+                unit: { select: { name: true } },
+                product_type: { select: { name: true } },
             },
         });
     }
 
-    static async preview(rows: any[]): Promise<ResponseRecipeImportDTO> {
+    private static async findMaterial(barcode: string) {
+        return prisma.rawMaterial.findUnique({
+            where: { barcode },
+            select: { id: true, name: true, barcode: true },
+        });
+    }
+
+    static async preview(rows: Record<string, any>[]): Promise<ResponseRecipeImportDTO> {
+        const parsedResults = rows.map((row) => RecipeImportRowSchema.safeParse(row));
+
         const parsedRows: RecipeImportPreviewDTO[] = await Promise.all(
-            rows.map(async (row) => {
-                const parsed = RecipeImportRowSchema.safeParse(row);
+            rows.map(async (row, index) => {
+                const parsed = parsedResults[index];
+
+                if (!parsed) {
+                    return {
+                        product_id: null,
+                        raw_mat_id: null,
+                        product_code: String(row["PRODUCT CODE"] || ""),
+                        product_name: "",
+                        product_type: "",
+                        material_code: String(row["MATERIAL CODE"] || ""),
+                        material_name: "",
+                        product_size: "",
+                        qty: 0,
+                        errors: ["Internal parsing error"],
+                    };
+                }
 
                 if (!parsed.success) {
                     return {
                         product_id: null,
                         raw_mat_id: null,
-                        product_code: row["PRODUCT CODE"] ?? "",
+                        product_code: String(row["PRODUCT CODE"] || ""),
                         product_name: "",
                         product_type: "",
-                        material_code: row["MATERIAL CODE"] ?? "",
+                        material_code: String(row["MATERIAL CODE"] || ""),
                         material_name: "",
                         product_size: "",
                         qty: 0,
@@ -118,47 +118,26 @@ export class RecipeImportService {
 
         await RecipeImportCacheService.save(import_id, payload);
 
-        return {
-            import_id,
-            total,
-            valid,
-            invalid,
-        };
+        return { import_id, total, valid, invalid };
     }
 
     static async execute(import_id: string) {
         const cache = (await RecipeImportCacheService.get(import_id)) as ImportCachePayload | null;
 
-        if (!cache) {
-            throw new Error("Import session expired or not found");
-        }
-
-        if (cache.status !== "preview") {
-            throw new Error("Import already executed or in progress");
-        }
+        if (!cache) throw new Error("Import session expired or not found");
+        if (cache.status !== "preview") throw new Error("Import already executed or in progress");
 
         const validRows = cache.rows.filter(
             (r) => r.errors.length === 0 && r.product_id && r.raw_mat_id,
         );
+        if (!validRows.length) throw new Error("No valid rows to import");
 
-        if (!validRows.length) {
-            throw new Error("No valid rows to import");
-        }
-
-        await RecipeImportCacheService.save(import_id, {
-            ...cache,
-            status: "executing",
-        });
+        await RecipeImportCacheService.save(import_id, { ...cache, status: "executing" });
 
         try {
-            // Kita bungkus bulkInsert dengan durasi yang lebih lama
             await this.bulkInsert(validRows);
             await RecipeImportCacheService.remove(import_id);
-
-            return {
-                import_id,
-                total: validRows.length,
-            };
+            return { import_id, total: validRows.length };
         } catch (err) {
             await RecipeImportCacheService.save(import_id, cache);
             console.error("[Import Error]:", err);
@@ -166,80 +145,80 @@ export class RecipeImportService {
         }
     }
 
+    /**
+     * Bulk insert recipe rows using a delete-then-insert strategy per product.
+     * Each row is preserved as a separate line (no aggregation), supporting
+     * duplicate material codes with different quantities (Hampers use case).
+     */
     private static async bulkInsert(data: RecipeImportPreviewDTO[]) {
         if (!data.length) return;
 
-        const map = new Map<string, number>();
+        const groupedByProduct = new Map<number, { raw_mat_id: number; quantity: number }[]>();
 
         for (const row of data) {
-            // 1. Pastikan ID ada dan unik per pasangan Product-Material
-            const key = `${row.product_id}-${row.raw_mat_id}`;
+            if (!row.product_id || !row.raw_mat_id) continue;
 
-            // 2. Konversi "0,3" menjadi "0.3" agar bisa dibaca sebagai angka
             const cleanQty =
                 typeof row.qty === "string"
                     ? parseFloat(String(row.qty).replace(",", "."))
                     : Number(row.qty);
 
-            if (!isNaN(cleanQty)) {
-                map.set(key, (map.get(key) || 0) + cleanQty);
-            }
+            if (isNaN(cleanQty)) continue;
+
+            const items = groupedByProduct.get(row.product_id) ?? [];
+            items.push({ raw_mat_id: row.raw_mat_id, quantity: cleanQty });
+            groupedByProduct.set(row.product_id, items);
         }
 
-        const allValues = Array.from(map.entries()).map(([key, qty]) => {
-            const [product_id, raw_mat_id] = key.split("-").map(Number);
-            return { product_id, raw_mat_id, quantity: qty };
-        });
-
-        console.log(`[Import] Total unique items to insert: ${allValues.length}`);
-
-        const chunkSize = 500;
-        const chunks: any[] = [];
-        for (let i = 0; i < allValues.length; i += chunkSize) {
-            chunks.push(allValues.slice(i, i + chunkSize));
-        }
+        const productIds = Array.from(groupedByProduct.keys());
+        console.log(`[Import] Products to update: ${productIds.length}`);
 
         await prisma.$transaction(
             async (tx) => {
-                for (const chunk of chunks) {
-                    const sqlValues: string[] = [];
-                    const flatParameters: any[] = [];
+                // Delete existing recipes for all affected products (version 1)
+                if (productIds.length > 0) {
+                    await tx.$executeRaw(
+                        Prisma.sql`DELETE FROM recipes WHERE product_id IN (${Prisma.join(productIds)}) AND version = 1`,
+                    );
+                }
 
-                    chunk.forEach(
-                        (v: { product_id: any; raw_mat_id: any; quantity: any }, index: number) => {
-                            const offset = index * 4;
-                            sqlValues.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4})`);
-                            flatParameters.push(v.product_id, v.raw_mat_id, v.quantity, 1);
-                        },
+                // Insert all rows per product in chunks
+                const CHUNK_SIZE = 500;
+                const allRows: { product_id: number; raw_mat_id: number; quantity: number }[] = [];
+
+                for (const [productId, items] of groupedByProduct) {
+                    for (const item of items) {
+                        allRows.push({
+                            product_id: productId,
+                            raw_mat_id: item.raw_mat_id,
+                            quantity: item.quantity,
+                        });
+                    }
+                }
+
+                for (let i = 0; i < allRows.length; i += CHUNK_SIZE) {
+                    const chunk = allRows.slice(i, i + CHUNK_SIZE);
+                    const values = chunk.map(
+                        (v) => {
+                            const useSizeCalc = Number(v.quantity) < 1.0;
+                            return Prisma.sql`(${v.product_id}, ${v.raw_mat_id}, ${v.quantity}, 1, true, ${useSizeCalc})`;
+                        }
                     );
 
-                    const query = `
-                INSERT INTO recipes (product_id, raw_mat_id, quantity, version)
-                VALUES ${sqlValues.join(",")}
-                ON CONFLICT (product_id, raw_mat_id, version) 
-                DO UPDATE SET quantity = EXCLUDED.quantity;
-            `;
-
-                    await tx.$executeRawUnsafe(query, ...flatParameters);
+                    await tx.$executeRaw(
+                        Prisma.sql`INSERT INTO recipes (product_id, raw_mat_id, quantity, version, is_active, use_size_calc) VALUES ${Prisma.join(values)}`,
+                    );
                 }
             },
-            {
-                maxWait: 300000,
-                timeout: 300000,
-            },
+            { maxWait: 300000, timeout: 300000 },
         );
     }
 
     static async getPreview(import_id: string) {
         const cache = await RecipeImportCacheService.get(import_id);
 
-        if (!cache) {
-            throw new Error("Import preview not found or expired");
-        }
-
-        if (cache.status !== "preview") {
-            throw new Error("Import already executed");
-        }
+        if (!cache) throw new Error("Import preview not found or expired");
+        if (cache.status !== "preview") throw new Error("Import already executed");
 
         return {
             import_id,

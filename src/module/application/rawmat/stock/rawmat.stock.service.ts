@@ -1,7 +1,11 @@
 import prisma from "../../../../config/prisma.js";
 import { Prisma } from "../../../../generated/prisma/client.js";
 import { GetPagination } from "../../../../lib/utils/pagination.js";
-import { QueryRawMaterialStockDTO, ResponseRawMaterialStockDTO } from "./rawmat.stock.schema.js";
+import {
+    QueryRawMaterialStockDTO,
+    RequestUpsertRawMaterialStockDTO,
+    ResponseRawMaterialStockDTO,
+} from "./rawmat.stock.schema.js";
 
 export class RawMaterialStockService {
     private static async getLatestPeriod() {
@@ -15,6 +19,47 @@ export class RawMaterialStockService {
         }
 
         return latest;
+    }
+
+    static async listRawMaterials() {
+        return prisma.rawMaterial.findMany({
+            where: {
+                deleted_at: null,
+            },
+            select: {
+                id: true,
+                name: true,
+                barcode: true,
+            },
+            orderBy: {
+                name: "asc",
+            },
+        });
+    }
+
+    static async upsertStock(data: RequestUpsertRawMaterialStockDTO) {
+        return prisma.rawMaterialInventory.upsert({
+            where: {
+                raw_material_id_warehouse_id_date_month_year: {
+                    raw_material_id: data.raw_material_id,
+                    warehouse_id: data.warehouse_id,
+                    date: 1,
+                    month: data.month,
+                    year: data.year,
+                },
+            },
+            update: {
+                quantity: data.quantity,
+            },
+            create: {
+                raw_material_id: data.raw_material_id,
+                warehouse_id: data.warehouse_id,
+                quantity: data.quantity,
+                date: 1,
+                month: data.month,
+                year: data.year,
+            },
+        });
     }
 
     static async listRawMaterialStock(query: QueryRawMaterialStockDTO): Promise<{
@@ -76,9 +121,16 @@ export class RawMaterialStockService {
 
         const [countResult, result] = await Promise.all([
             prisma.$queryRaw<{ total: bigint }[]>`
-            SELECT COUNT(*)::bigint AS total
+            SELECT COUNT(DISTINCT rm.id)::bigint AS total
             FROM raw_materials rm
             LEFT JOIN raw_mat_categories c ON rm.raw_mat_categories_id = c.id
+            LEFT JOIN (
+                SELECT raw_material_id, warehouse_id, SUM(quantity) as quantity
+                FROM raw_material_inventories
+                WHERE month = ${month} AND year = ${year}
+                ${query.warehouse_id ? Prisma.sql`AND warehouse_id = ${query.warehouse_id}` : Prisma.sql``}
+                GROUP BY raw_material_id, warehouse_id
+            ) ri ON rm.id = ri.raw_material_id
             ${whereClause}
         `,
             prisma.$queryRaw<any[]>`
@@ -99,6 +151,7 @@ export class RawMaterialStockService {
                 SELECT raw_material_id, warehouse_id, SUM(quantity) as quantity
                 FROM raw_material_inventories
                 WHERE month = ${month} AND year = ${year}
+                ${query.warehouse_id ? Prisma.sql`AND warehouse_id = ${query.warehouse_id}` : Prisma.sql``}
                 GROUP BY raw_material_id, warehouse_id
             ) ri ON rm.id = ri.raw_material_id
             LEFT JOIN warehouses w ON ri.warehouse_id = w.id
@@ -138,5 +191,34 @@ export class RawMaterialStockService {
                 name: "asc",
             },
         });
+    }
+
+    static async export(query: QueryRawMaterialStockDTO) {
+        const { data } = await this.listRawMaterialStock({ ...query, take: 1000000, page: 1 });
+
+        const ExcelJS = await import("exceljs");
+        const workbook = new ExcelJS.default.Workbook();
+        const sheet = workbook.addWorksheet("Raw Material Stocks");
+
+        // Template format: MATERIAL CODE, CURRENT STOCK
+        sheet.columns = [
+            { header: "MATERIAL CODE", key: "barcode", width: 25 },
+            { header: "MATERIAL NAME", key: "name", width: 40 },
+            { header: "CATEGORY", key: "category", width: 25 },
+            { header: "UNIT", key: "unit", width: 15 },
+            { header: "CURRENT STOCK", key: "amount", width: 20 },
+        ];
+
+        data.forEach((item) => {
+            sheet.addRow({
+                barcode: item.barcode || "-",
+                name: item.name,
+                category: item.category || "-",
+                unit: item.uom,
+                amount: item.amount,
+            });
+        });
+
+        return await workbook.csv.writeBuffer();
     }
 }

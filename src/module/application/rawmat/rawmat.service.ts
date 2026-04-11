@@ -15,6 +15,7 @@ import {
 } from "../../../generated/prisma/client.js";
 import { normalizeSlug } from "../../../lib/index.js";
 import { MaterialType } from "../../../generated/prisma/enums.js";
+import ExcelJS from "exceljs";
 
 type RawRow = {
     id: number;
@@ -37,6 +38,7 @@ type RawRow = {
     sup_id: number | null;
     sup_name: string | null;
     sup_country: string | null;
+    source: "LOCAL" | "IMPORT";
 };
 
 const SORT_MAP: Record<string, string> = {
@@ -55,6 +57,7 @@ function toDTO(r: RawRow): ResponseRawMaterialDTO {
         id: r.id,
         barcode: r.barcode,
         name: r.name,
+        source: r.source,
         price: r.price,
         min_buy: r.min_buy,
         min_stock: r.min_stock,
@@ -115,6 +118,7 @@ export class RawMaterialService {
                     min_stock: data.min_stock ?? null,
                     lead_time: data.lead_time ?? null,
                     type: (data.type as MaterialType) ?? null,
+                    source: data.source as any,
                     unit_raw_material: unitRelation,
                     ...(categoryRelation && { raw_mat_category: categoryRelation }),
                     ...(data.supplier_id && {
@@ -137,29 +141,18 @@ export class RawMaterialService {
             if (!findSupplier) throw new ApiError(404, "Supplier tidak ditemukan");
         }
 
-        if (payload.barcode !== undefined && payload.barcode !== null) {
-            const existingBarcode = await prisma.rawMaterial.findFirst({
-                where: {
-                    barcode: String(payload.barcode),
-                    id: { not: id },
-                },
-            });
-            if (existingBarcode)
-                throw new ApiError(400, "Barcode telah digunakan, tolong ubah dengan barcode lainnya");
-        }
-
         return prisma.$transaction(async (tx) => {
             const exists = await tx.rawMaterial.findFirst({ where: { id, deleted_at: null } });
             if (!exists) throw new ApiError(404, "Raw material tidak ditemukan");
 
             const data: Prisma.RawMaterialUpdateInput = {
-                ...(payload.barcode !== undefined && { barcode: payload.barcode }),
                 ...(payload.name && { name: payload.name }),
                 ...(payload.price !== undefined && { price: payload.price }),
                 ...(payload.min_buy !== undefined && { min_buy: payload.min_buy }),
                 ...(payload.min_stock !== undefined && { min_stock: payload.min_stock }),
                 ...(payload.lead_time !== undefined && { lead_time: payload.lead_time }),
                 ...(payload.type !== undefined && { type: payload.type as MaterialType }),
+                ...(payload.source !== undefined && { source: payload.source as any }),
             };
 
             if (payload.supplier_id === null) {
@@ -194,7 +187,7 @@ export class RawMaterialService {
                 rm.price::float8 AS price,
                 rm.min_buy::float8 AS min_buy,
                 rm.min_stock::float8 AS min_stock,
-                rm.lead_time, rm.type,
+                rm.lead_time, rm.type, rm.source,
                 rm.created_at, rm.updated_at, rm.deleted_at,
                 urm.id AS unit_id, urm.name AS unit_name, urm.slug AS unit_slug,
                 rmc.id AS cat_id, rmc.name AS cat_name, rmc.slug AS cat_slug,
@@ -271,7 +264,7 @@ export class RawMaterialService {
                     rm.price::float8 AS price,
                     rm.min_buy::float8 AS min_buy,
                     rm.min_stock::float8 AS min_stock,
-                    rm.lead_time, rm.type,
+                    rm.lead_time, rm.type, rm.source,
                     rm.created_at, rm.updated_at, rm.deleted_at,
                     urm.id AS unit_id, urm.name AS unit_name, urm.slug AS unit_slug,
                     rmc.id AS cat_id, rmc.name AS cat_name, rmc.slug AS cat_slug,
@@ -312,12 +305,94 @@ export class RawMaterialService {
             data: { deleted_at: null },
         });
     }
+    
+    static async bulkStatus(ids: number[], status: "ACTIVE" | "DELETE") {
+        return prisma.rawMaterial.updateMany({
+            where: { id: { in: ids } },
+            data: { deleted_at: status === "DELETE" ? new Date() : null },
+        });
+    }
+
+    static async export(query: QueryRawMaterialDTO) {
+        const { data } = await this.list({ ...query, take: 1000000, page: 1 });
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet("Data Raw Materials");
+
+        const visibleCols = query.visibleColumns ? query.visibleColumns.split(",") : [];
+        const hasVisibility = visibleCols.length > 0;
+
+        const allColumns = [
+            { header: "ID", key: "id", width: 10, id: "id" },
+            { header: "Barcode", key: "barcode", width: 20, id: "barcode" },
+            { header: "Nama Material", key: "name", width: 40, id: "name" },
+            { header: "Kategori", key: "category", width: 25, id: "category" },
+            { header: "Supplier", key: "supplier", width: 25, id: "supplier" },
+            { header: "Satuan", key: "unit", width: 15, id: "unit" },
+            { header: "Tipe", key: "type", width: 15, id: "type" },
+            { header: "Source", key: "source", width: 15, id: "source" },
+            { header: "Harga", key: "price", width: 15, id: "price" },
+            { header: "Min. Beli", key: "min_buy", width: 12, id: "min_buy" },
+            { header: "Min. Stok", key: "min_stock", width: 12, id: "min_stock" },
+            { header: "Lead Time", key: "lead_time", width: 12, id: "lead_time" },
+            { header: "Dibuat", key: "created_at", width: 15, id: "created_at" },
+            { header: "Update", key: "updated_at", width: 15, id: "updated_at" },
+        ];
+
+        const filteredColumns = hasVisibility
+            ? allColumns.filter((col) => col.id === "id" || visibleCols.includes(col.id))
+            : allColumns;
+
+        sheet.columns = filteredColumns.map(({ header, key, width }) => ({ header, key, width }));
+
+        data.forEach((item, index) => {
+            const typeLabel = item.type === "FO" ? "FO" : item.type === "PCKG" ? "PCKG" : "-";
+            sheet.addRow({
+                id: item.id,
+                barcode: item.barcode || "-",
+                name: item.name,
+                category: item.raw_mat_category?.name || "-",
+                supplier: item.supplier?.name || "-",
+                unit: item.unit_raw_material.name,
+                type: typeLabel,
+                source: item.source,
+                price: item.price,
+                min_buy: item.min_buy || 0,
+                min_stock: item.min_stock || 0,
+                lead_time: item.lead_time || 0,
+                created_at: item.created_at,
+                updated_at: item.updated_at,
+            });
+        });
+
+        return await workbook.csv.writeBuffer();
+    }
 
     static async clean() {
-        const count = await prisma.rawMaterial.count({ where: { deleted_at: { not: null } } });
-        if (count === 0) throw new ApiError(400, "Tidak ada raw material yang akan dihapus");
+        const softDeleted = await prisma.rawMaterial.findMany({
+            where: { deleted_at: { not: null } },
+            select: { id: true },
+        });
 
-        return prisma.rawMaterial.deleteMany({ where: { deleted_at: { not: null } } });
+        if (softDeleted.length === 0)
+            throw new ApiError(400, "Tidak ada raw material yang akan dihapus");
+
+        const ids = softDeleted.map((s) => s.id);
+
+        return prisma.$transaction(async (tx) => {
+            // 1. Manually clean polymorphic/loose relations
+            await tx.stockMovement.deleteMany({
+                where: {
+                    entity_type: "RAW_MATERIAL",
+                    entity_id: { in: ids },
+                },
+            });
+
+            // 2. Clear bulk Status (soft deleted)
+            return tx.rawMaterial.deleteMany({
+                where: { id: { in: ids } },
+            });
+        });
     }
 
     static async getUtils(): Promise<{

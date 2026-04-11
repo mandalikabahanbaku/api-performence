@@ -58,7 +58,7 @@ export const QueryIssuanceRekapSchema = z.object({
     variant: z.string().optional(),
     page: z.number().int().positive().default(1).optional(),
     take: z.number().int().positive().max(100).default(50).optional(),
-    sortBy: z.enum(["name", "code", "offline", "online", "spin_wheel", "garansi_out", "all_qty", "total_qty"]).default("total_qty"),
+    sortBy: z.enum(["name", "code", "offline", "online", "spin_wheel", "garansi_out", "b2b", "all_qty", "total_qty"]).default("total_qty"),
     sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
 

@@ -48,4 +48,15 @@ export class ProductStockController {
         const result = await ProductStockService.listWarehouses();
         return ApiResponse.sendSuccess(c, result, 200);
     }
+
+    static async listProducts(c: Context) {
+        const result = await ProductStockService.listProducts();
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async upsertStock(c: Context) {
+        const body = await c.req.json();
+        const result = await ProductStockService.upsertStock(body);
+        return ApiResponse.sendSuccess(c, result, 201);
+    }
 }

@@ -4,7 +4,17 @@ import { GENDER } from "../../../../generated/prisma/enums.js";
 export const RequestProductStockSchema = z.object({
     code: z.string(),
     amount: z.number(),
-    warehouse_id: z.string(),
+    warehouse_id: z.number(),
+    month: z.number().min(1).max(12),
+    year: z.number().min(2000),
+});
+
+export const RequestUpsertProductStockSchema = z.object({
+    product_id: z.number(),
+    warehouse_id: z.number(),
+    quantity: z.number(),
+    month: z.number().min(1).max(12),
+    year: z.number().min(2000),
 });
 
 export const ResponseProductStockSchema = z.object({
@@ -46,5 +56,6 @@ export const QueryProductStockSchema = z.object({
 });
 
 export type RequestProductStockDTO = z.infer<typeof RequestProductStockSchema>;
+export type RequestUpsertProductStockDTO = z.infer<typeof RequestUpsertProductStockSchema>;
 export type ResponseProductStockDTO = z.output<typeof ResponseProductStockSchema>;
 export type QueryProductStockDTO = z.input<typeof QueryProductStockSchema>;

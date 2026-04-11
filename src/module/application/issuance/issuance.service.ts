@@ -5,7 +5,12 @@ import { GetPagination } from "../../../lib/utils/pagination.js";
 
 import { QueryIssuanceDTO, RequestIssuanceDTO, ResponseIssuanceDTO, QueryIssuanceRekapDTO } from "./issuance.schema.js";
 
+// Periode <= threshold → ambil type='ALL'; periode > threshold → SUM semua type non-ALL
+export const ISSUANCE_THRESHOLD_PERIOD = 2026 * 12 + 2; // February 2026
+
 export class IssuanceService {
+    static readonly THRESHOLD_PERIOD = ISSUANCE_THRESHOLD_PERIOD;
+
     private static resolvePeriod(month?: number, year?: number) {
         const now = new Date();
         const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
@@ -25,40 +30,33 @@ export class IssuanceService {
         });
     }
 
-    static async create(body: RequestIssuanceDTO): Promise<void> {
+    static async save(body: RequestIssuanceDTO): Promise<void> {
         const { product_id, quantity, month: rawMonth, year: rawYear, type } = body;
 
         const product = await this.findProduct(product_id);
         if (!product) throw new ApiError(404, "Produk tersebut tidak ditemukan");
 
         const { month, year } = this.resolvePeriod(rawMonth, rawYear);
+        const forceAll = (year * 12 + month) <= IssuanceService.THRESHOLD_PERIOD;
 
-        const exist = await this.findIssuanceByPeriod(product_id, month, year, type);
-        if (exist) {
+        if (forceAll && type !== IssuanceType.ALL) {
             throw new ApiError(
                 400,
-                `Data pengeluaran ${product.name.toUpperCase()} tipe ${type} pada periode ${month}/${year} sudah tersedia`,
+                `Untuk periode ${month}/${year} dan sebelumnya, sistem hanya menerima tipe pengeluaran 'ALL'`,
             );
         }
 
-        await prisma.productIssuance.create({
-            data: { product_id, quantity, month, year, type },
-        });
-    }
-
-    static async update(body: RequestIssuanceDTO): Promise<void> {
-        const { product_id, quantity, month, year, type } = body;
-
-        if (!month || !year) {
-            throw new ApiError(400, "Bulan dan tahun wajib diisi untuk proses update");
-        }
-
-        const issuance = await this.findIssuanceByPeriod(product_id, month, year, type);
-        if (!issuance) throw new ApiError(404, "Data pengeluaran tidak ditemukan");
-
-        await prisma.productIssuance.update({
-            where: { id: issuance.id },
-            data: { quantity },
+        await prisma.productIssuance.upsert({
+            where: {
+                product_id_year_month_type: {
+                    product_id,
+                    month,
+                    year,
+                    type,
+                },
+            },
+            update: { quantity },
+            create: { product_id, quantity, month, year, type },
         });
     }
 
@@ -124,8 +122,12 @@ export class IssuanceService {
         }
 
         const saTypeFilter = type
-            ? Prisma.sql`AND sa.type = CAST(${type} AS "IssuanceType")`
-            : Prisma.sql`AND sa.type = 'ALL'::"IssuanceType"`;
+            ? Prisma.sql`AND (
+                ((sa.year * 12 + sa.month) <= ${IssuanceService.THRESHOLD_PERIOD} AND sa.type = 'ALL'::"IssuanceType")
+                OR
+                ((sa.year * 12 + sa.month) > ${IssuanceService.THRESHOLD_PERIOD} AND sa.type = CAST(${type} AS "IssuanceType"))
+            )`
+            : Prisma.empty;
 
         const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}`;
 
@@ -175,14 +177,24 @@ export class IssuanceService {
                     '[]'::json
                 )                                AS issuances_data
             FROM products p
-            LEFT JOIN product_types pt   ON p.type_id  = pt.id
-            LEFT JOIN unit_of_materials u ON p.unit_id  = u.id
-            LEFT JOIN product_size ps    ON p.size_id  = ps.id
-            LEFT JOIN product_issuances sa
-                ON  sa.product_id = p.id
-                AND (sa.year * 12 + sa.month) >= ${startVal}
-                AND (sa.year * 12 + sa.month) <= ${endVal}
-                ${saTypeFilter}
+            LEFT JOIN product_types pt ON p.type_id = pt.id
+            LEFT JOIN product_size ps ON p.size_id = ps.id
+            LEFT JOIN unit_of_materials u ON p.unit_id = u.id
+            LEFT JOIN (
+                SELECT 
+                    product_id, 
+                    year, 
+                    month,
+                    COALESCE(
+                        NULLIF(SUM(CASE WHEN (year * 12 + month) > ${IssuanceService.THRESHOLD_PERIOD} AND type::text != 'ALL' THEN quantity ELSE 0 END), 0),
+                        SUM(CASE WHEN (year * 12 + month) <= ${IssuanceService.THRESHOLD_PERIOD} AND type::text = 'ALL' THEN quantity ELSE 0 END)
+                    ) as quantity
+                FROM product_issuances
+                WHERE (year * 12 + month) >= ${startVal}
+                  AND (year * 12 + month) <= ${endVal}
+                  ${saTypeFilter}
+                GROUP BY product_id, year, month
+            ) sa ON sa.product_id = p.id
             ${whereSql}
             GROUP BY p.id, p.code, p.name, ps.size, u.name, pt.id, pt.name, pt.slug
             ${orderBySql}
@@ -243,37 +255,51 @@ export class IssuanceService {
     ): Promise<ResponseIssuanceDTO> {
         if (!year || !month) throw new ApiError(400, "Tahun dan bulan wajib diisi");
 
-        const issuance = await prisma.productIssuance.findUnique({
-            where: {
-                product_id_year_month_type: {
-                    product_id,
-                    year,
-                    month,
-                    type: type ?? IssuanceType.ALL,
-                },
-            },
-            include: {
-                product: {
-                    select: {
-                        id: true,
-                        code: true,
-                        name: true,
-                        product_type: { select: { name: true, id: true, slug: true } },
-                    },
-                },
-            },
+        const forceAll = (year * 12 + month) <= IssuanceService.THRESHOLD_PERIOD;
+        const typeSql = type 
+            ? forceAll 
+                ? Prisma.sql`AND type = 'ALL'::"IssuanceType"`
+                : Prisma.sql`AND type = CAST(${type} AS "IssuanceType")`
+            : Prisma.empty;
+
+        // Prioritized logic: Sum of specific types OR 'ALL' type
+        const issuanceRows = await prisma.$queryRaw<any[]>(Prisma.sql`
+            SELECT 
+                COALESCE(SUM(CASE WHEN (year * 12 + month) > ${IssuanceService.THRESHOLD_PERIOD} AND type::text != 'ALL' THEN quantity ELSE 0 END), 0) as others_sum,
+                COALESCE(SUM(CASE WHEN (year * 12 + month) <= ${IssuanceService.THRESHOLD_PERIOD} AND type::text = 'ALL' THEN quantity ELSE 0 END), 0) as all_val,
+                MAX(id) as last_id
+            FROM product_issuances
+            WHERE product_id = ${product_id} AND year = ${year} AND month = ${month}
+            ${typeSql}
+        `);
+
+        if (!issuanceRows[0] || (issuanceRows[0].others_sum === 0 && issuanceRows[0].all_val === 0)) {
+            throw new ApiError(404, "Data pengeluaran tidak ditemukan");
+        }
+
+        const stats = issuanceRows[0];
+        const finalQuantity = stats.others_sum > 0 ? stats.others_sum : stats.all_val;
+
+        // Fetch basic info from product
+        const product = await prisma.product.findUniqueOrThrow({
+            where: { id: product_id },
+            include: { product_type: true }
         });
 
-        if (!issuance) throw new ApiError(404, "Data pengeluaran tidak ditemukan");
-
         return {
-            ...issuance,
-            quantity: Number(issuance.quantity),
+            id: stats.last_id,
+            product_id,
+            year,
+            month,
+            type: type ?? (stats.others_sum > 0 ? IssuanceType.ALL : IssuanceType.ALL), // Placeholder or specific mapping
+            quantity: Number(finalQuantity),
+            created_at: new Date(), // Mocked for summary, as it's consolidated
+            updated_at: new Date(),
             product: {
-                id: issuance.product.id,
-                name: issuance.product.name,
-                code: issuance.product.code,
-                product_type: issuance.product.product_type ?? null,
+                id: product.id,
+                name: product.name,
+                code: product.code,
+                product_type: product.product_type ?? null,
             },
         };
     }
@@ -318,7 +344,7 @@ export class IssuanceService {
 
         if (total === 0) return { rekap: [], len: 0 };
 
-        const validSortFields = ["name", "code", "offline", "online", "spin_wheel", "garansi_out", "all_qty", "total_qty"];
+        const validSortFields = ["name", "code", "offline", "online", "spin_wheel", "garansi_out", "b2b", "all_qty", "total_qty"];
         const actualSortBy = validSortFields.includes(sortBy) ? sortBy : "name";
         const actualSortOrder = sortOrder === "desc" ? Prisma.sql`DESC` : Prisma.sql`ASC`;
         
@@ -329,8 +355,11 @@ export class IssuanceService {
         else if (actualSortBy === "online") orderBySql = Prisma.sql`ORDER BY online ${actualSortOrder}`;
         else if (actualSortBy === "spin_wheel") orderBySql = Prisma.sql`ORDER BY spin_wheel ${actualSortOrder}`;
         else if (actualSortBy === "garansi_out") orderBySql = Prisma.sql`ORDER BY garansi_out ${actualSortOrder}`;
-        else if (actualSortBy === "all_qty") orderBySql = Prisma.sql`ORDER BY all_qty ${actualSortOrder}`;
-        else if (actualSortBy === "total_qty") orderBySql = Prisma.sql`ORDER BY total_qty ${actualSortOrder}`;
+        else if (actualSortBy === "b2b") orderBySql = Prisma.sql`ORDER BY b2b ${actualSortOrder}`;
+        else if (actualSortBy === "all_qty" || actualSortBy === "total_qty") 
+            orderBySql = Prisma.sql`ORDER BY total_qty ${actualSortOrder}`;
+
+        const forceAll = (year * 12 + month) <= IssuanceService.THRESHOLD_PERIOD;
 
         const rows = await prisma.$queryRaw<any[]>(Prisma.sql`
             SELECT
@@ -340,16 +369,14 @@ export class IssuanceService {
                 ps.size                          AS size_val,
                 u.name                           AS unit_name,
                 pt.name                          AS pt_name,
-                COALESCE(SUM(CASE WHEN sa.type = 'OFFLINE' THEN sa.quantity ELSE 0 END), 0)::float AS offline,
-                COALESCE(SUM(CASE WHEN sa.type = 'ONLINE' THEN sa.quantity ELSE 0 END), 0)::float AS online,
-                COALESCE(SUM(CASE WHEN sa.type = 'SPIN_WHEEL' THEN sa.quantity ELSE 0 END), 0)::float AS spin_wheel,
-                COALESCE(SUM(CASE WHEN sa.type = 'GARANSI_OUT' THEN sa.quantity ELSE 0 END), 0)::float AS garansi_out,
-                COALESCE(SUM(CASE WHEN sa.type = 'ALL' THEN sa.quantity ELSE 0 END), 0)::float AS all_qty,
-                (
-                    COALESCE(SUM(CASE WHEN sa.type = 'OFFLINE' THEN sa.quantity ELSE 0 END), 0) +
-                    COALESCE(SUM(CASE WHEN sa.type = 'ONLINE' THEN sa.quantity ELSE 0 END), 0) +
-                    COALESCE(SUM(CASE WHEN sa.type = 'SPIN_WHEEL' THEN sa.quantity ELSE 0 END), 0) +
-                    COALESCE(SUM(CASE WHEN sa.type = 'GARANSI_OUT' THEN sa.quantity ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN ${!forceAll} AND sa.type::text = 'OFFLINE' THEN sa.quantity ELSE 0 END), 0)::float AS offline,
+                COALESCE(SUM(CASE WHEN ${!forceAll} AND sa.type::text = 'ONLINE' THEN sa.quantity ELSE 0 END), 0)::float AS online,
+                COALESCE(SUM(CASE WHEN ${!forceAll} AND sa.type::text = 'SPIN_WHEEL' THEN sa.quantity ELSE 0 END), 0)::float AS spin_wheel,
+                COALESCE(SUM(CASE WHEN ${!forceAll} AND sa.type::text = 'GARANSI_OUT' THEN sa.quantity ELSE 0 END), 0)::float AS garansi_out,
+                COALESCE(SUM(CASE WHEN ${!forceAll} AND sa.type::text = 'B2B' THEN sa.quantity ELSE 0 END), 0)::float AS b2b,
+                COALESCE(
+                    NULLIF(SUM(CASE WHEN ${!forceAll} AND sa.type::text != 'ALL' THEN sa.quantity ELSE 0 END), 0),
+                    SUM(CASE WHEN ${forceAll} AND sa.type::text = 'ALL' THEN sa.quantity ELSE 0 END)
                 )::float AS total_qty
             FROM products p
             LEFT JOIN product_types pt ON p.type_id = pt.id
@@ -376,7 +403,8 @@ export class IssuanceService {
                 online: row.online,
                 spin_wheel: row.spin_wheel,
                 garansi_out: row.garansi_out,
-                all_qty: row.all_qty,
+                b2b: row.b2b,
+                all_qty: row.total_qty,
                 total_qty: row.total_qty,
             })),
             len: total

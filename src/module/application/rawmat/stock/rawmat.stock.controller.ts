@@ -31,4 +31,39 @@ export class RawMaterialStockController {
         const result = await RawMaterialStockService.listWarehouses();
         return ApiResponse.sendSuccess(c, result, 200);
     }
+
+    static async listRawMaterials(c: Context) {
+        const result = await RawMaterialStockService.listRawMaterials();
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async upsertStock(c: Context) {
+        const data = await c.req.json();
+        const result = await RawMaterialStockService.upsertStock(data);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async export(c: Context) {
+        const query = c.req.query();
+        const params: QueryRawMaterialStockDTO = {
+            search: query.search,
+            category_id: query.category_id ? Number(query.category_id) : undefined,
+            supplier_id: query.supplier_id ? Number(query.supplier_id) : undefined,
+            month: query.month ? Number(query.month) : undefined,
+            year: query.year ? Number(query.year) : undefined,
+            warehouse_id: query.warehouse_id ? Number(query.warehouse_id) : undefined,
+            sortBy: "name",
+            sortOrder: "asc",
+        };
+
+        const buffer = await RawMaterialStockService.export(params);
+
+        c.header("Content-Type", "text/csv");
+        c.header(
+            "Content-Disposition",
+            `attachment; filename=rawmat-stock-${params.warehouse_id || "all"}-${params.year || ""}-${params.month || ""}.csv`,
+        );
+
+        return c.body(buffer as any);
+    }
 }

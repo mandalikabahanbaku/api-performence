@@ -31,22 +31,25 @@ export class RawMaterialInventoryImportService {
             },
         });
     }
-    static async preview(rows: any[]): Promise<ResponseRawMaterialInventoryImportDTO> {
+    static async preview(rows: Record<string, any>[]): Promise<ResponseRawMaterialInventoryImportDTO> {
+        const parsedResults = rows.map((row) => RawMaterialInventoryImportRowSchema.safeParse(row));
         const parsedRows: RawMaterialInventoryImportPreviewDTO[] = await Promise.all(
-            rows.map(async (row) => {
-                const parsed = RawMaterialInventoryImportRowSchema.safeParse(row);
-                // Mapping dari header Excel: "PRODUCT CODE" (atau sesuaikan ke "MATERIAL CODE" jika perlu)
-                const code = row["MATERIAL CODE"]?.toString().trim();
-
-                const parseQty = (val: any) => {
-                    if (val === undefined || val === null || val === "") return NaN;
-                    const n = parseFloat(val);
-                    return n;
-                };
+            rows.map(async (row, index) => {
+                const parsed = parsedResults[index];
+                
+                if (!parsed) {
+                    return {
+                        barcode: String(row["MATERIAL CODE"] || ""),
+                        category: "",
+                        name: "",
+                        amount: 0,
+                        errors: ["Internal parsing error"],
+                    };
+                }
 
                 if (!parsed.success) {
                     return {
-                        barcode: "",
+                        barcode: String(row["MATERIAL CODE"] || ""),
                         category: "",
                         name: "",
                         amount: 0,
@@ -58,16 +61,11 @@ export class RawMaterialInventoryImportService {
                 const material = await this.findRawMat(data["MATERIAL CODE"]);
                 const errors = material ? [] : ["Material tidak ditemukan"];
 
-                const amount = parseQty(data["CURRENT STOCK"]);
-                if (isNaN(amount)) {
-                    errors.push("Stok harus berupa angka");
-                }
-
                 return {
-                    barcode: code,
+                    barcode: data["MATERIAL CODE"],
                     name: material?.name || "",
                     category: material?.raw_mat_category?.name || "",
-                    amount: isNaN(amount) ? 0 : amount,
+                    amount: data["CURRENT STOCK"],
                     errors: errors,
                 };
             }),

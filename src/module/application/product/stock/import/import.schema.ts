@@ -1,8 +1,17 @@
 import z from "zod";
 
+const sanitizeNumber = (val: unknown) => {
+    if (val === "" || val === null || val === undefined) return 0;
+    if (typeof val === "string") {
+        const cleaned = val.replace(/[^\d]/g, "");
+        return cleaned === "" ? 0 : Number(cleaned);
+    }
+    return Number(val);
+};
+
 export const ProductStockImportRowSchema = z.object({
     "PRODUCT CODE": z.string().min(1),
-    "CURRENT STOCK": z.coerce.number().default(0),
+    "CURRENT STOCK": z.preprocess(sanitizeNumber, z.coerce.number().default(0)),
 });
 
 export type ProductStockImportRow = z.infer<typeof ProductStockImportRowSchema>;

@@ -19,7 +19,7 @@ type ImportCachePayload = {
 };
 
 export class ProductStockImportService {
-    static async preview(rows: any[]): Promise<ResponseProductStockImportDTO> {
+    static async preview(rows: Record<string, any>[]): Promise<ResponseProductStockImportDTO> {
         // Collect product codes for batch search
         const codes = rows
             .map((r) => r["PRODUCT CODE"])
@@ -39,13 +39,26 @@ export class ProductStockImportService {
             : [];
 
         const productMap = new Map(products.map((p) => [p.code, p]));
+        const parsedResults = rows.map((row) => ProductStockImportRowSchema.safeParse(row));
 
-        const parsedRows: ProductStockImportPreviewDTO[] = rows.map((row) => {
-            const parsed = ProductStockImportRowSchema.safeParse(row);
+        const parsedRows: ProductStockImportPreviewDTO[] = rows.map((row, index) => {
+            const parsed = parsedResults[index];
+
+            if (!parsed) {
+                return {
+                    code: String(row["PRODUCT CODE"] || ""),
+                    product_id: 0,
+                    name: "",
+                    size: "",
+                    type: "",
+                    amount: 0,
+                    errors: ["Internal parsing error"],
+                };
+            }
 
             if (!parsed.success) {
                 return {
-                    code: row["PRODUCT CODE"] || "",
+                    code: String(row["PRODUCT CODE"] || ""),
                     product_id: 0,
                     name: "",
                     size: "",
@@ -65,7 +78,7 @@ export class ProductStockImportService {
                     name: "",
                     size: "",
                     type: "",
-                    amount: Number(data["CURRENT STOCK"]) || 0,
+                    amount: data["CURRENT STOCK"],
                     errors: ["Produk tidak ditemukan"],
                 };
             }
@@ -76,7 +89,7 @@ export class ProductStockImportService {
                 name: product.name,
                 size: product.size?.size?.toString() || "",
                 type: product.product_type?.name || "",
-                amount: Number(data["CURRENT STOCK"]) || 0,
+                amount: data["CURRENT STOCK"],
                 errors: [],
             };
         });

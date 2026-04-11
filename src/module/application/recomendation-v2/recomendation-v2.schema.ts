@@ -8,6 +8,7 @@ export const QueryRecomendationV2Schema = z.object({
     year: z.coerce.number().min(2000).optional(),
     sales_months: z.coerce.number().min(0).max(12).optional().default(3),
     forecast_months: z.coerce.number().min(0).max(12).optional().default(3),
+    po_months: z.coerce.number().min(0).max(12).optional().default(3),
     type: z.enum(["ffo", "lokal", "impor"]).optional(),
     sortBy: z.string().optional(),
     order: z.enum(["asc", "desc"]).optional(),
@@ -30,6 +31,15 @@ export const RequestSaveWorkOrderSchema = z.object({
 });
 
 export type RequestSaveWorkOrderDTO = z.infer<typeof RequestSaveWorkOrderSchema>;
+
+export const RequestSaveOpenPoSchema = z.object({
+    raw_mat_id: z.coerce.number(),
+    month: z.coerce.number().min(1).max(12),
+    year: z.coerce.number().min(2000),
+    quantity: z.coerce.number().min(0),
+});
+
+export type RequestSaveOpenPoDTO = z.infer<typeof RequestSaveOpenPoSchema>;
 
 export const RequestBulkSaveHorizonSchema = z.object({
     month: z.coerce.number().min(1).max(12),
@@ -56,13 +66,14 @@ export const ResponseRecomendationV2Schema = z.object({
     moq: z.number(),
     lead_time: z.number().nullable(),
     uom: z.string(),
-    recommendation_quantity: z.number().nullable(),
+    recommendation_quantity: z.number(),
     // Base data for transparency
     current_stock: z.number(),
     open_po: z.number(),
     stock_fg_x_resep: z.number(),
     safety_stock_x_resep: z.number(),
     forecast_needed: z.number(),
+    total_needed_horizon: z.number().optional(),
 
     // Work Order Info
     work_order_id: z.number().optional().nullable(),
@@ -81,7 +92,8 @@ export const ResponseRecomendationV2Schema = z.object({
         month: z.number(),
         year: z.number(),
         key: z.string(),
-        quantity: z.number()
+        quantity: z.number(),
+        override_needs: z.number().nullable().optional()
     })).optional(),
     open_pos: z.array(z.object({
         month: z.number(),
@@ -91,4 +103,29 @@ export const ResponseRecomendationV2Schema = z.object({
     })).optional(),
 });
 
+
+export const RequestUpdateMoqSchema = z.object({
+    material_id: z.coerce.number(),
+    moq: z.coerce.number().min(0),
+});
+
+export type RequestUpdateMoqDTO = z.infer<typeof RequestUpdateMoqSchema>;
+
 export type ResponseRecomendationV2DTO = z.infer<typeof ResponseRecomendationV2Schema>;
+
+export const RequestSaveNeedOverrideSchema = z.object({
+    raw_material_id: z.coerce.number(),
+    month: z.coerce.number().min(1).max(12),
+    year: z.coerce.number().min(2000),
+    quantity: z.coerce.number().min(0),
+});
+
+export type RequestSaveNeedOverrideDTO = z.infer<typeof RequestSaveNeedOverrideSchema>;
+
+export const RequestDeleteNeedOverrideSchema = z.object({
+    raw_material_id: z.coerce.number(),
+    month: z.coerce.number().min(1).max(12),
+    year: z.coerce.number().min(2000),
+});
+
+export type RequestDeleteNeedOverrideDTO = z.infer<typeof RequestDeleteNeedOverrideSchema>;

@@ -163,6 +163,7 @@ export class ConsolidationService {
             const supplierAddress = item.raw_material?.supplier?.addresses || "";
             const supplierPhone = item.raw_material?.supplier?.phone || "";
             const supplierCountry = item.raw_material?.supplier?.country || "";
+            const source = item.raw_material?.source || "LOCAL";
 
             if (!grouping[supplierId]) {
                 grouping[supplierId] = {
@@ -171,6 +172,7 @@ export class ConsolidationService {
                     supplier_address: supplierAddress,
                     supplier_phone: supplierPhone,
                     supplier_country: supplierCountry,
+                    source: source,
                     total_amount: 0,
                     total_items: 0,
                     items: [],
@@ -310,6 +312,6 @@ export class ConsolidationService {
         };
         sheet.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
 
-        return await workbook.xlsx.writeBuffer();
+        return await workbook.csv.writeBuffer();
     }
 }

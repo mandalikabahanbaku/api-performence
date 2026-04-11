@@ -137,6 +137,8 @@ model Product {
   recipes                 Recipes[]
   safety_stock            SafetyStock[]
   stock_transfer_items    StockTransferItem[]
+  goods_receipt_items     GoodsReceiptItem[]
+  returns                 StockReturnItem[]
 
   @@index([code])
   @@index([type_id])
@@ -195,26 +197,28 @@ model UnitRawMaterial {
 }
 
 model RawMaterial {
-  id                      Int                     @id @default(autoincrement())
-  barcode                 String?                 @unique @db.VarChar(50)
-  name                    String                  @db.VarChar(255)
-  price                   Decimal                 @db.Decimal(18, 2)
-  min_buy                 Decimal?                @db.Decimal(18, 2)
-  min_stock               Decimal?                @db.Decimal(18, 2)
+  id                      Int                       @id @default(autoincrement())
+  barcode                 String?                   @unique @db.VarChar(50)
+  name                    String                    @db.VarChar(255)
+  price                   Decimal                   @db.Decimal(18, 2)
+  min_buy                 Decimal?                  @db.Decimal(18, 2)
+  min_stock               Decimal?                  @db.Decimal(18, 2)
   unit_id                 Int
   raw_mat_categories_id   Int?
   supplier_id             Int?
-  created_at              DateTime                @default(now())
+  created_at              DateTime                  @default(now())
   deleted_at              DateTime?
-  updated_at              DateTime?               @updatedAt
+  updated_at              DateTime?                 @updatedAt
   lead_time               Int?
   type                    MaterialType?
+  source                  RawMaterialSource         @default(LOCAL)
   purchase_drafts         MaterialPurchaseDraft[]
   rawmaterial_inventories RawMaterialInventory[]
   open_pos                RawMaterialOpenPo[]
-  raw_mat_category        RawMatCategories?       @relation(fields: [raw_mat_categories_id], references: [id])
-  supplier                Supplier?               @relation(fields: [supplier_id], references: [id])
-  unit_raw_material       UnitRawMaterial         @relation(fields: [unit_id], references: [id], onDelete: Cascade)
+  need_overrides          RawMaterialNeedOverride[]
+  raw_mat_category        RawMatCategories?         @relation(fields: [raw_mat_categories_id], references: [id])
+  supplier                Supplier?                 @relation(fields: [supplier_id], references: [id])
+  unit_raw_material       UnitRawMaterial           @relation(fields: [unit_id], references: [id], onDelete: Cascade)
   recipes                 Recipes[]
 
   @@map("raw_materials")
@@ -289,6 +293,9 @@ model Warehouse {
   raw_material_inventories RawMaterialInventory[]
   transfers_as_source      StockTransfer[]        @relation("TransferFromWarehouse")
   transfers_as_destination StockTransfer[]        @relation("TransferToWarehouse")
+  returns_as_source        StockReturn[]          @relation("ReturnFromWarehouse")
+  returns_as_destination   StockReturn[]          @relation("ReturnToWarehouse")
+  goods_receipts           GoodsReceipt[]
   warehouse_address        WarehouseAddress?
 
   @@index([name])
@@ -303,10 +310,13 @@ model Recipes {
   description   String?
   is_active     Boolean     @default(true)
   version       Int         @default(1)
+  use_size_calc Boolean     @default(true)
   products      Product     @relation(fields: [product_id], references: [id], onDelete: Cascade)
   raw_materials RawMaterial @relation(fields: [raw_mat_id], references: [id], onDelete: Cascade)
 
   @@unique([product_id, raw_mat_id, version])
+  @@index([product_id])
+  @@index([product_id, raw_mat_id])
   @@map("recipes")
 }
 
@@ -345,10 +355,11 @@ model ProductIssuance {
 }
 
 model ForecastPercentage {
-  id        Int      @id @default(autoincrement())
-  month     Int      @db.SmallInt
-  year      Int      @db.SmallInt
-  value     Decimal  @default(0) @db.Decimal(5, 2)
+  id        Int        @id @default(autoincrement())
+  month     Int        @db.SmallInt
+  year      Int        @db.SmallInt
+  value     Decimal    @default(0) @db.Decimal(5, 2)
+  forecasts Forecast[]
 
   @@unique([id, month, year])
   @@unique([month, year])
@@ -356,31 +367,34 @@ model ForecastPercentage {
 }
 
 model Forecast {
-  id                     Int            @id @default(autoincrement())
+  id                     Int                 @id @default(autoincrement())
   product_id             Int
-  month                  Int            @db.SmallInt
-  year                   Int            @db.SmallInt
-  trend                  Trend          @default(STABLE)
-  model_used             ForecastModel? @default(LINEAR_REGRESSION)
-  status                 ForecastStatus @default(DRAFT)
-  version                Int            @default(1)
-  is_latest              Boolean        @default(true)
-  created_at             DateTime       @default(now())
-  updated_at             DateTime       @updatedAt
-  absolute_error         Decimal?       @db.Decimal(18, 2)
-  base_forecast          Decimal        @db.Decimal(18, 2)
-  final_forecast         Decimal        @db.Decimal(18, 2)
+  month                  Int                 @db.SmallInt
+  year                   Int                 @db.SmallInt
+  trend                  Trend               @default(STABLE)
+  model_used             ForecastModel?      @default(LINEAR_REGRESSION)
+  status                 ForecastStatus      @default(DRAFT)
+  version                Int                 @default(1)
+  is_latest              Boolean             @default(true)
+  created_at             DateTime            @default(now())
+  updated_at             DateTime            @updatedAt
+  absolute_error         Decimal?            @db.Decimal(18, 2)
+  base_forecast          Decimal             @db.Decimal(18, 2)
+  final_forecast         Decimal             @db.Decimal(18, 2)
   adjusted_at            DateTime?
-  forecast_for           DateTime       @db.Date
-  generated_in           DateTime       @db.Date
-  is_actionable          Boolean        @default(false)
-  valid_from             DateTime?      @db.Date
-  additional_ratio       Decimal?       @db.Decimal(5, 2)
-  system_ratio           Decimal?       @db.Decimal(5, 2)
+  forecast_for           DateTime            @db.Date
+  generated_in           DateTime            @db.Date
+  is_actionable          Boolean             @default(false)
+  valid_from             DateTime?           @db.Date
+  additional_ratio       Decimal?            @db.Decimal(5, 2)
+  system_ratio           Decimal?            @db.Decimal(5, 2)
   // Legacy: percentage-based fields (retained for backward compat, not used by LR engine)
   forecast_percentage_id Int?
-  product                Product        @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  ratio                  Decimal?            @db.Decimal(5, 2)
+  forecast_percentage    ForecastPercentage? @relation(fields: [forecast_percentage_id], references: [id])
+  product                Product             @relation(fields: [product_id], references: [id], onDelete: Cascade)
 
+  @@unique([product_id, month, year])
   @@unique([product_id, month, year, version])
   @@index([product_id])
   @@index([status])
@@ -403,6 +417,9 @@ model SafetyStock {
   safety_stock_ratio    Decimal  @db.Decimal(18, 2)
   z_value_used          Decimal  @db.Decimal(6, 3)
   additional_ratio      Decimal  @db.Decimal(18, 2)
+  avg_forecast          Decimal? @db.Decimal(18, 2)
+  horizon               Int?
+  total_forecast        Decimal? @db.Decimal(18, 2)
   product               Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
 
   @@unique([product_id, month, year])
@@ -465,6 +482,8 @@ model Outlet {
   warehouses               OutletWarehouse[]
   transfers_as_source      StockTransfer[]   @relation("TransferFromOutlet")
   transfers_as_destination StockTransfer[]   @relation("TransferToOutlet")
+  returns_as_source        StockReturn[]     @relation("ReturnFromOutlet")
+  returns_as_destination   StockReturn[]     @relation("ReturnToOutlet")
 
   @@index([code])
   @@index([type])
@@ -489,12 +508,12 @@ model OutletWarehouse {
 model OutletAddress {
   outlet_id       Int      @id
   street          String?
-  district        String?   @db.VarChar(100)
-  sub_district    String?   @db.VarChar(100)
-  city            String?   @db.VarChar(100)
-  province        String?   @db.VarChar(100)
-  country         String?   @db.VarChar(100)
-  postal_code     String?   @db.VarChar(6)
+  district        String?  @db.VarChar(100)
+  sub_district    String?  @db.VarChar(100)
+  city            String?  @db.VarChar(100)
+  province        String?  @db.VarChar(100)
+  country         String?  @db.VarChar(100)
+  postal_code     String?  @db.VarChar(6)
   notes           String?
   url_google_maps String?
   created_at      DateTime @default(now())
@@ -563,8 +582,11 @@ model StockTransfer {
   shipped_at        DateTime?
   received_at       DateTime?
   fulfilled_at      DateTime?
+  cancelled_at      DateTime?
+  cancelled_by      String?              @db.VarChar(100)
   created_at        DateTime             @default(now())
   updated_at        DateTime             @updatedAt
+  date              DateTime             @default(now())
   barcode           String               @unique @db.VarChar(20)
   received_notes    String?
   items             StockTransferItem[]
@@ -573,6 +595,7 @@ model StockTransfer {
   from_warehouse    Warehouse?           @relation("TransferFromWarehouse", fields: [from_warehouse_id], references: [id])
   to_outlet         Outlet?              @relation("TransferToOutlet", fields: [to_outlet_id], references: [id])
   to_warehouse      Warehouse?           @relation("TransferToWarehouse", fields: [to_warehouse_id], references: [id])
+  returns           StockReturn[]
 
   @@index([barcode])
   @@index([status])
@@ -623,6 +646,7 @@ enum IssuanceType {
   ONLINE
   SPIN_WHEEL
   GARANSI_OUT
+  B2B
 }
 
 enum WarehouseType {
@@ -763,6 +787,8 @@ enum MovementType {
   OPNAME
   INITIAL
   POS_SALE
+  RETURN_IN
+  RETURN_OUT
 }
 
 enum MovementRefType {
@@ -771,10 +797,134 @@ enum MovementRefType {
   STOCK_ADJUSTMENT
   ISSUANCE_TRANSACTION
   MANUAL
+  GOODS_RECEIPT
+  STOCK_RETURN
 }
 
 enum TransferPhotoStage {
   SHIPMENT
   RECEIVED
   FULFILLMENT
+}
+
+model RawMaterialNeedOverride {
+  id              Int         @id @default(autoincrement())
+  raw_material_id Int
+  month           Int         @db.SmallInt
+  year            Int         @db.SmallInt
+  quantity        Decimal     @db.Decimal(18, 2)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+  raw_material    RawMaterial @relation(fields: [raw_material_id], references: [id], onDelete: Cascade)
+
+  @@unique([raw_material_id, month, year])
+  @@index([raw_material_id])
+  @@map("raw_material_need_overrides")
+}
+
+model StockReturn {
+  id                 Int                  @id @default(autoincrement())
+  return_number      String               @unique @db.VarChar(20)
+  from_type          TransferLocationType
+  from_warehouse_id  Int?
+  from_outlet_id     Int?
+  to_type            TransferLocationType
+  to_warehouse_id    Int?
+  to_outlet_id       Int?
+  status             ReturnStatus         @default(DRAFT)
+  notes              String?
+  source_transfer_id Int?
+  created_by         String               @db.VarChar(100)
+  created_at         DateTime             @default(now())
+  updated_at         DateTime             @updatedAt
+  shipped_at         DateTime?
+  received_at        DateTime?
+  items              StockReturnItem[]
+  from_outlet        Outlet?              @relation("ReturnFromOutlet", fields: [from_outlet_id], references: [id])
+  from_warehouse     Warehouse?           @relation("ReturnFromWarehouse", fields: [from_warehouse_id], references: [id])
+  to_outlet          Outlet?              @relation("ReturnToOutlet", fields: [to_outlet_id], references: [id])
+  to_warehouse       Warehouse?           @relation("ReturnToWarehouse", fields: [to_warehouse_id], references: [id])
+  source_transfer    StockTransfer?       @relation(fields: [source_transfer_id], references: [id])
+
+  @@index([return_number])
+  @@index([status])
+  @@index([from_type, from_warehouse_id])
+  @@index([from_type, from_outlet_id])
+  @@index([to_type, to_warehouse_id])
+  @@index([to_type, to_outlet_id])
+  @@map("stock_returns")
+}
+
+model StockReturnItem {
+  id         Int         @id @default(autoincrement())
+  return_id  Int
+  product_id Int
+  quantity   Decimal     @db.Decimal(18, 2)
+  notes      String?
+  product    Product     @relation(fields: [product_id], references: [id])
+  return     StockReturn @relation(fields: [return_id], references: [id], onDelete: Cascade)
+
+  @@index([return_id])
+  @@index([product_id])
+  @@map("stock_return_items")
+}
+
+model GoodsReceipt {
+  id           Int                @id @default(autoincrement())
+  gr_number    String             @unique @db.VarChar(50)
+  type         GoodsReceiptType   @default(MANUAL)
+  status       GoodsReceiptStatus @default(PENDING)
+  date         DateTime           @default(now())
+  warehouse_id Int
+  notes        String?
+  created_by   String             @db.VarChar(100)
+  posted_at    DateTime?
+  created_at   DateTime           @default(now())
+  updated_at   DateTime           @updatedAt
+  items        GoodsReceiptItem[]
+  warehouse    Warehouse          @relation(fields: [warehouse_id], references: [id])
+
+  @@index([gr_number])
+  @@index([status])
+  @@index([warehouse_id])
+  @@map("goods_receipts")
+}
+
+model GoodsReceiptItem {
+  id               Int          @id @default(autoincrement())
+  gr_id            Int
+  product_id       Int
+  quantity_planned Decimal      @db.Decimal(18, 2)
+  quantity_actual  Decimal      @db.Decimal(18, 2)
+  notes            String?
+  goods_receipt    GoodsReceipt @relation(fields: [gr_id], references: [id], onDelete: Cascade)
+  product          Product      @relation(fields: [product_id], references: [id])
+
+  @@index([gr_id])
+  @@index([product_id])
+  @@map("goods_receipt_items")
+}
+
+enum RawMaterialSource {
+  LOCAL
+  IMPORT
+}
+
+enum GoodsReceiptStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum GoodsReceiptType {
+  QC_FG
+  MANUAL
+}
+
+enum ReturnStatus {
+  DRAFT
+  SHIPPING
+  RECEIVED
+  COMPLETED
+  CANCELLED
 }

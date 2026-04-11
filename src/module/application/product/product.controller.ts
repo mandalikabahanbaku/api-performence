@@ -114,8 +114,8 @@ export class ProductController {
 
         const buffer = await ProductService.export(params);
 
-        c.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        c.header("Content-Disposition", `attachment; filename="data-produk.xlsx"`);
+        c.header("Content-Type", "text/csv");
+        c.header("Content-Disposition", `attachment; filename="data-produk.csv"`);
         return c.body(buffer as any);
     }
 
@@ -154,12 +154,9 @@ export class ProductController {
 
     static async detail(c: Context) {
         const id = c.req.param("id");
-        const valId = Number(id);
-        if (!id || isNaN(valId)) {
-            throw new ApiError(400, "ID Produk tidak valid");
-        }
+        if (!id) throw new ApiError(400, "Kesalahan pada proses permintaan data");
 
-        const result = await ProductService.detail(valId);
+        const result = await ProductService.detail(Number(id));
 
         return ApiResponse.sendSuccess(c, result, 200);
     }

@@ -189,14 +189,33 @@ export class ProductService {
         };
         sheet.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
 
-        return await workbook.xlsx.writeBuffer();
+        return await workbook.csv.writeBuffer();
     }
 
     static async clean() {
-        const count = await prisma.product.count({ where: { deleted_at: { not: null } } });
-        if (count === 0) throw new ApiError(400, "Tidak ada produk yang akan dihapus");
+        const products = await prisma.product.findMany({
+            where: { deleted_at: { not: null } },
+            select: { id: true },
+        });
 
-        await prisma.product.deleteMany({ where: { deleted_at: { not: null } } });
+        if (products.length === 0) throw new ApiError(400, "Tidak ada produk yang akan dihapus");
+        const ids = products.map((p) => p.id);
+
+        await prisma.$transaction(async (tx) => {
+            // Delete related records in specific order
+            await tx.forecast.deleteMany({ where: { product_id: { in: ids } } });
+            await tx.outletInventory.deleteMany({ where: { product_id: { in: ids } } });
+            await tx.productInventory.deleteMany({ where: { product_id: { in: ids } } });
+            await tx.productIssuance.deleteMany({ where: { product_id: { in: ids } } });
+            await tx.recipes.deleteMany({ where: { product_id: { in: ids } } });
+            await tx.safetyStock.deleteMany({ where: { product_id: { in: ids } } });
+            await tx.stockTransferItem.deleteMany({ where: { product_id: { in: ids } } });
+            await tx.goodsReceiptItem.deleteMany({ where: { product_id: { in: ids } } });
+            await tx.stockReturnItem.deleteMany({ where: { product_id: { in: ids } } });
+
+            // Finally delete products
+            await tx.product.deleteMany({ where: { id: { in: ids } } });
+        });
     }
 
     static async list(
@@ -229,7 +248,7 @@ export class ProductService {
         if (search) {
             const searchPattern = `%${search}%`;
             conditions.push(
-                Prisma.sql`(p.name ILIKE ${searchPattern} OR p.code ILIKE ${searchPattern})`,
+                Prisma.sql`(p.name ILIKE ${searchPattern} OR p.code ILIKE ${searchPattern} OR pt.name ILIKE ${searchPattern})`,
             );
         }
 
@@ -303,17 +322,16 @@ export class ProductService {
             LEFT JOIN product_types pt ON p.type_id = pt.id
             LEFT JOIN unit_of_materials u ON p.unit_id = u.id
             LEFT JOIN product_size ps ON p.size_id = ps.id
-            LEFT JOIN forecasts f_m1 ON f_m1.product_id = p.id 
-                AND f_m1.month = ${currentMonth} 
-                AND f_m1.year = ${currentYear}
-                AND f_m1.is_latest = true
+            LEFT JOIN forecasts f_m1 ON f_m1.product_id = p.id AND f_m1.month = ${currentMonth} AND f_m1.year = ${currentYear}
             ${whereClause}
             ORDER BY ${orderBy}
             LIMIT ${limit} OFFSET ${skip}
         `;
 
         const countTask = prisma.$queryRaw<[{ count: bigint }]>`
-            SELECT COUNT(*)::bigint FROM products p ${whereClause}
+            SELECT COUNT(*)::bigint FROM products p 
+            LEFT JOIN product_types pt ON p.type_id = pt.id
+            ${whereClause}
         `;
 
         const [products, countResult] = await Promise.all([dataTask, countTask]);

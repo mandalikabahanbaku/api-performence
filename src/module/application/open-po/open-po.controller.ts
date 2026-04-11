@@ -31,8 +31,8 @@ export class OpenPoController {
         const validQuery = QueryOpenPoSchema.parse(query);
         const buffer = await OpenPoService.export(validQuery);
 
-        c.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        c.header("Content-Disposition", "attachment; filename=Tracking_PO_Open.xlsx");
+        c.header("Content-Type", "text/csv");
+        c.header("Content-Disposition", "attachment; filename=Tracking_PO_Open.csv");
 
         return c.body(buffer as any);
     }

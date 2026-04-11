@@ -11,24 +11,18 @@ import {
 
 export class RecipeService {
     static async upsert(body: RequestRecipeDTO) {
-        const rawMatIds = body.raw_material.map((i) => i.raw_material_id);
-        const uniqueIds = new Set(rawMatIds);
-
-        if (uniqueIds.size !== rawMatIds.length) {
-            throw new ApiError(400, "Raw material tidak boleh duplikasi");
-        }
-
         const product = await prisma.product.findUnique({
             where: { id: body.product_id },
             select: { id: true },
         });
         if (!product) throw new ApiError(404, "Produk tidak ditemukan");
 
+        const rawMatIds = body.raw_material.map((i) => i.raw_material_id);
         const rawMaterials = await prisma.rawMaterial.findMany({
             where: { id: { in: rawMatIds } },
             select: { id: true },
         });
-        if (rawMaterials.length !== rawMatIds.length) {
+        if (rawMaterials.length !== new Set(rawMatIds).size) {
             throw new ApiError(404, "Satu atau lebih raw material tidak ditemukan");
         }
 
@@ -38,11 +32,11 @@ export class RecipeService {
             quantity: item.quantity,
             version: body.version,
             is_active: body.is_active,
+            use_size_calc: Number(item.quantity) < 1.0, // Auto-detect formula type
             description: body.description || null,
         }));
 
         return await prisma.$transaction(async (tx) => {
-            // Jika versi baru ini Aktif, nonaktifkan versi lain untuk produk ini
             if (body.is_active) {
                 await tx.recipes.updateMany({
                     where: { product_id: body.product_id, version: { not: body.version } },
@@ -50,12 +44,10 @@ export class RecipeService {
                 });
             }
 
-            // Hapus data lama untuk VERSI INI saja
             await tx.recipes.deleteMany({
                 where: { product_id: body.product_id, version: body.version },
             });
 
-            // Simpan data baru
             await tx.recipes.createMany({ data });
 
             return {
@@ -80,7 +72,6 @@ export class RecipeService {
 
         const { skip, take: limit } = GetPagination(page, take);
 
-        // ── 1. Get active inventory period (latest month with raw material data) ──
         const latestPeriod = await prisma.rawMaterialInventory.findFirst({
             orderBy: [{ year: "desc" }, { month: "desc" }],
             select: { month: true, year: true },
@@ -88,10 +79,7 @@ export class RecipeService {
         const activeMonth = latestPeriod?.month ?? new Date().getMonth() + 1;
         const activeYear = latestPeriod?.year ?? new Date().getFullYear();
 
-        // ── 2. Build WHERE conditions (parameterized — safe from SQL injection) ──
-        const conditions: Prisma.Sql[] = [
-            Prisma.sql`rm.deleted_at IS NULL`,
-        ];
+        const conditions: Prisma.Sql[] = [Prisma.sql`rm.deleted_at IS NULL`];
 
         if (product_id) conditions.push(Prisma.sql`r.product_id = ${product_id}`);
         if (raw_mat_id) conditions.push(Prisma.sql`r.raw_mat_id = ${raw_mat_id}`);
@@ -106,7 +94,6 @@ export class RecipeService {
 
         const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}`;
 
-        // ── 3. COUNT (single roundtrip) ──
         const countRows = await prisma.$queryRaw<{ total: bigint }[]>(Prisma.sql`
             SELECT COUNT(*)::bigint AS total
             FROM   recipes r
@@ -117,71 +104,46 @@ export class RecipeService {
         const len = Number(countRows[0]?.total ?? 0);
         if (len === 0) return { data: [], len: 0 };
 
-        // ── 4. Whitelist ORDER BY (prevents SQL injection from client input) ──
-        const orderBySql =
-            sortBy === "quantity" && sortOrder === "asc"
-                ? Prisma.sql`ORDER BY r.quantity ASC`
-                : sortBy === "quantity" && sortOrder === "desc"
-                  ? Prisma.sql`ORDER BY r.quantity DESC`
-                  : sortBy === "product" && sortOrder === "asc"
-                    ? Prisma.sql`ORDER BY p.name ASC`
-                    : sortBy === "product" && sortOrder === "desc"
-                      ? Prisma.sql`ORDER BY p.name DESC`
-                      : sortBy === "current_stock" && sortOrder === "asc"
-                        ? Prisma.sql`ORDER BY current_stock ASC`
-                        : sortBy === "current_stock" && sortOrder === "desc"
-                          ? Prisma.sql`ORDER BY current_stock DESC`
-                          : (sortBy === "total_material" || sortBy === "totalMaterial") &&
-                              sortOrder === "asc"
-                            ? Prisma.sql`ORDER BY total_material ASC, p.name ASC`
-                            : (sortBy === "total_material" || sortBy === "totalMaterial") &&
-                                sortOrder === "desc"
-                              ? Prisma.sql`ORDER BY total_material DESC, p.name ASC`
-                              : Prisma.sql`ORDER BY p.name DESC`; // default: product desc
+        const orderMap: Record<string, Record<string, Prisma.Sql>> = {
+            quantity:       { asc: Prisma.sql`ORDER BY r.quantity ASC`,       desc: Prisma.sql`ORDER BY r.quantity DESC` },
+            product:        { asc: Prisma.sql`ORDER BY p.name ASC`,          desc: Prisma.sql`ORDER BY p.name DESC` },
+            current_stock:  { asc: Prisma.sql`ORDER BY current_stock ASC`,   desc: Prisma.sql`ORDER BY current_stock DESC` },
+            total_material: { asc: Prisma.sql`ORDER BY total_material ASC, p.name ASC`, desc: Prisma.sql`ORDER BY total_material DESC, p.name ASC` },
+            totalMaterial:  { asc: Prisma.sql`ORDER BY total_material ASC, p.name ASC`, desc: Prisma.sql`ORDER BY total_material DESC, p.name ASC` },
+        };
+        const orderBySql = orderMap[sortBy]?.[sortOrder] ?? Prisma.sql`ORDER BY p.name DESC`;
 
-        // ── 5. Main data query — all JOINs in one roundtrip ──
         const rows = await prisma.$queryRaw<RawRecipeRow[]>(Prisma.sql`
             SELECT
                 r.id,
                 r.quantity,
-
                 p.id            AS product_id,
                 p.name          AS product_name,
                 p.code          AS product_code,
-
                 pt.id           AS pt_id,
                 pt.name         AS pt_name,
                 pt.slug         AS pt_slug,
-
                 u.id            AS unit_id,
                 u.name          AS unit_name,
                 u.slug          AS unit_slug,
-
                 ps.id           AS size_id,
                 ps.size         AS size_val,
-
                 rm.name         AS rm_name,
                 rm.barcode      AS rm_barcode,
                 rm.price        AS rm_price,
-
                 r.version,
                 r.is_active,
                 r.description,
-
                 urm.id          AS urm_id,
                 urm.name        AS urm_name,
-
-                COALESCE(
-                    (
-                        SELECT SUM(rmi.quantity)
-                        FROM   raw_material_inventories rmi
-                        WHERE  rmi.raw_material_id = rm.id
-                          AND  rmi.month = ${activeMonth}
-                          AND  rmi.year  = ${activeYear}
-                    ), 0
-                )               AS current_stock,
+                COALESCE((
+                    SELECT SUM(rmi.quantity)
+                    FROM   raw_material_inventories rmi
+                    WHERE  rmi.raw_material_id = rm.id
+                      AND  rmi.month = ${activeMonth}
+                      AND  rmi.year  = ${activeYear}
+                ), 0) AS current_stock,
                 COUNT(*) OVER(PARTITION BY r.product_id) as total_material
-
             FROM   recipes r
             JOIN   products              p   ON p.id   = r.product_id
             JOIN   raw_materials         rm  ON rm.id  = r.raw_mat_id
@@ -227,7 +189,6 @@ export class RecipeService {
     }
 
     static async detail(id: number): Promise<ResponseDetailRecipeDTO> {
-        // 1. Dapatkan metadata dari salah satu ID resep untuk menentukan Product + Version
         const trigger = await prisma.recipes.findUnique({
             where: { id },
             select: { product_id: true, version: true },
@@ -242,7 +203,6 @@ export class RecipeService {
                 p.name,
                 pt.name         AS type_name,
                 u.name          AS unit_name,
-
                 rm.id           AS raw_mat_id,
                 rm.barcode,
                 rm.name         AS rm_name,
@@ -288,8 +248,6 @@ export class RecipeService {
         return data;
     }
 }
-
-// ── Internal raw query types ──────────────────────────────────────────────────
 
 type RawRecipeRow = {
     id: number;

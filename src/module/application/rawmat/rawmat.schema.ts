@@ -15,6 +15,7 @@ export const RequestRawMaterialSchema = z.object({
     min_stock: z.number().nullable().optional(),
     lead_time: z.number().int().positive().nullable().optional(),
     type: z.enum(MaterialType).nullable().optional(),
+    source: z.enum(["LOCAL", "IMPORT"]).default("LOCAL").optional(),
     supplier_id: z.number().nullable().optional(),
 
     raw_mat_category: z.string().optional(),
@@ -27,6 +28,7 @@ export const ResponseRawMaterialSchema = RequestRawMaterialSchema.omit({
     raw_mat_category: true,
 }).extend({
     id: z.number(),
+    source: z.enum(["LOCAL", "IMPORT"]),
     current_stock: z.number().optional(),
     supplier: z
         .object({
@@ -74,9 +76,16 @@ export const QueryRawMaterialSchema = z.object({
     category_id: z.coerce.number().optional(),
     supplier_id: z.coerce.number().optional(),
     unit_id: z.coerce.number().optional(),
+    visibleColumns: z.string().optional(),
 });
 
+export type QueryRawMaterialDTO = z.infer<typeof QueryRawMaterialSchema>;
 export type RequestRawMaterialDTO = z.input<typeof RequestRawMaterialSchema>;
 export type ResponseRawMaterialDTO = z.output<typeof ResponseRawMaterialSchema>;
 
-export type QueryRawMaterialDTO = z.infer<typeof QueryRawMaterialSchema>;
+export const BulkStatusRawMaterialSchema = z.object({
+    ids: z.array(z.number()),
+    status: z.enum(["ACTIVE", "DELETE"]),
+});
+
+export type BulkStatusRawMaterialDTO = z.infer<typeof BulkStatusRawMaterialSchema>;

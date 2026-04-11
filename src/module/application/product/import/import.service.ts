@@ -30,13 +30,27 @@ export class ProductImportService {
     }
 
     static async preview(rows: Record<string, any>[]): Promise<ResponseProductImportDTO> {
-        const parsedRows: ProductImportPreviewDTO[] = rows.map((row) => {
-            const parsed = ProductImportRowSchema.safeParse(row);
+        const parsedResults = rows.map((row) => ProductImportRowSchema.safeParse(row));
+        const parsedRows: ProductImportPreviewDTO[] = rows.map((row, index) => {
+            const parsed = parsedResults[index];
+            if (!parsed) {
+                return {
+                    code: String(row["PRODUCT CODE"] || ""),
+                    name: String(row["PRODUCT NAME"] || ""),
+                    gender: GENDER.UNISEX,
+                    size: 0,
+                    type: null,
+                    unit: null,
+                    distribution_percentage: 0,
+                    safety_percentage: 0,
+                    errors: ["Internal parsing error"],
+                };
+            }
 
             if (!parsed.success) {
                 return {
-                    code: row["PRODUCT CODE"] || "",
-                    name: row["PRODUCT NAME"] || "",
+                    code: String(row["PRODUCT CODE"] || ""),
+                    name: String(row["PRODUCT NAME"] || ""),
                     gender: GENDER.UNISEX,
                     size: 0,
                     type: null,
@@ -70,30 +84,6 @@ export class ProductImportService {
                 errors: [],
             };
         });
-
-        // === Validasi duplikat: kode produk sama tapi nama produk berbeda ===
-        const codeNameMap = new Map<string, Set<string>>();
-        for (const row of parsedRows) {
-            if (!row.code) continue;
-            const key = row.code.toUpperCase();
-            if (!codeNameMap.has(key)) {
-                codeNameMap.set(key, new Set());
-            }
-            codeNameMap.get(key)!.add(row.name.trim().toUpperCase());
-        }
-
-        // Tandai baris yang memiliki kode sama tapi nama berbeda sebagai tidak valid
-        for (const row of parsedRows) {
-            if (!row.code) continue;
-            const key = row.code.toUpperCase();
-            const names = codeNameMap.get(key);
-            if (names && names.size > 1) {
-                const allNames = [...names].join(", ");
-                row.errors.push(
-                    `Duplikat kode produk "${row.code}" ditemukan dengan nama berbeda: ${allNames}. Pastikan satu kode hanya memiliki satu nama produk.`
-                );
-            }
-        }
 
         const total = parsedRows.length;
         const invalid = parsedRows.filter((r) => r.errors.length > 0).length;
@@ -147,17 +137,17 @@ export class ProductImportService {
     private static async bulkInsert(data: ProductImportPreviewDTO[]) {
         if (!data.length) return;
 
-        // Deduplicate incoming data by product code, keeping the latest entry
-        const uniqueDataMap = new Map<string, ProductImportPreviewDTO>();
+        // Dedup data by code to avoid "affect row a second time" error
+        const dedupped = new Map<string, ProductImportPreviewDTO>();
         for (const d of data) {
-            uniqueDataMap.set(d.code, d);
+            if (d.code?.trim()) dedupped.set(d.code.trim(), d);
         }
-        const uniqueData = Array.from(uniqueDataMap.values());
+        const finalData = Array.from(dedupped.values());
 
         // Extract unique master data for dependency tables
-        const types = [...new Set(uniqueData.map((d) => d.type).filter(Boolean))] as string[];
-        const units = [...new Set(uniqueData.map((d) => d.unit).filter(Boolean))] as string[];
-        const sizes = [...new Set(uniqueData.map((d) => d.size).filter((s) => s > 0))] as number[];
+        const types = [...new Set(finalData.map((d) => d.type).filter(Boolean))] as string[];
+        const units = [...new Set(finalData.map((d) => d.unit).filter(Boolean))] as string[];
+        const sizes = [...new Set(finalData.map((d) => d.size).filter((s) => s > 0))] as number[];
 
         await prisma.$transaction(async (tx) => {
             // Upsert dependency tables
@@ -190,14 +180,14 @@ export class ProductImportService {
 
             // Map data to arrays for parallel unnesting
             const cols = {
-                codes: uniqueData.map((d) => d.code),
-                names: uniqueData.map((d) => d.name),
-                genders: uniqueData.map((d) => d.gender || GENDER.UNISEX),
-                prodSizes: uniqueData.map((d) => d.size || null),
-                typeSlugs: uniqueData.map((d) => d.type || null),
-                unitSlugs: uniqueData.map((d) => d.unit || null),
-                distributionPercs: uniqueData.map((d) => d.distribution_percentage || 0),
-                safetyPercs: uniqueData.map((d) => d.safety_percentage || 0),
+                codes: finalData.map((d) => d.code),
+                names: finalData.map((d) => d.name),
+                genders: finalData.map((d) => d.gender || GENDER.UNISEX),
+                prodSizes: finalData.map((d) => d.size || null),
+                typeSlugs: finalData.map((d) => d.type || null),
+                unitSlugs: finalData.map((d) => d.unit || null),
+                distributionPercs: finalData.map((d) => d.distribution_percentage || 0),
+                safetyPercs: finalData.map((d) => d.safety_percentage || 0),
             };
 
             // Main product upsert using multi-array unnest for maximum performance and alignment safety

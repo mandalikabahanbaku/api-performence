@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import { validateBody } from "../../../middleware/validation.js";
-import { RequestRawMaterialSchema } from "./rawmat.schema.js";
+import {
+    BulkStatusRawMaterialSchema,
+    RequestRawMaterialSchema,
+} from "./rawmat.schema.js";
 import { RawMaterialController } from "./rawmat.controller.js";
 import { SupplierRoutes } from "./supplier/supplier.routes.js";
 import { UnitRawMaterialRoutes } from "./unit/unit.routes.js";
@@ -15,8 +18,14 @@ RawMaterialRoutes.route("/categories", RawMatCategoryRoutes);
 RawMaterialRoutes.route("/import", RawmatImportRoutes);
 RawMaterialRoutes.route("/stocks", RawMaterialStockRoutes);
 
+RawMaterialRoutes.get("/export", RawMaterialController.export);
 RawMaterialRoutes.get("/count-utils", RawMaterialController.countUtils);
 RawMaterialRoutes.delete("/clean", RawMaterialController.clean);
+RawMaterialRoutes.put(
+    "/bulk-status",
+    validateBody(BulkStatusRawMaterialSchema),
+    RawMaterialController.bulkStatus,
+);
 
 RawMaterialRoutes.get("/:id", RawMaterialController.detail);
 RawMaterialRoutes.put(

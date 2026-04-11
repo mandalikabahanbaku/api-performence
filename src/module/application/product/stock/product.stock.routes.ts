@@ -6,4 +6,6 @@ export const ProductStockRoutes = new Hono();
 
 ProductStockRoutes.route("/import", ProductStockImportRoutes);
 ProductStockRoutes.get("/warehouses", ProductStockController.listWarehouses);
+ProductStockRoutes.get("/products", ProductStockController.listProducts);
 ProductStockRoutes.get("/", ProductStockController.listProductStock);
+ProductStockRoutes.post("/", ProductStockController.upsertStock);

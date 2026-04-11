@@ -20,37 +20,63 @@ type ImportCachePayload = {
 const PREFIX = "rawmat:import:";
 
 export class RawmatImportService {
-    static async preview(rows: any[]): Promise<ResponseRawmatImportDTO> {
-        const parsedRows: RawmatImportPreviewDTO[] = rows.map((row) => {
-            const parsed = RawmatImportRowSchema.safeParse(row);
-
-            if (!parsed.success) {
+    static async preview(rows: Record<string, any>[]): Promise<ResponseRawmatImportDTO> {
+        const parsedResults = rows.map((row) => RawmatImportRowSchema.safeParse(row));
+        const parsedRows: RawmatImportPreviewDTO[] = rows.map((row, index) => {
+            const parsed = parsedResults[index];
+            if (!parsed) {
                 return {
-                    barcode: "",
-                    name: "",
+                    barcode: String(row.BARCODE || ""),
+                    name: String(row["MATERIAL NAME"] || ""),
                     price: 0,
                     min_buy: 0,
                     min_stock: 0,
                     unit: "",
                     category: "",
                     supplier: "",
-                    country: "LOCAL",
+                    country: "",
+                    source: "LOCAL",
                     lead_time: 0,
-                    errors: parsed.error.issues.map((e) => `${e.path.join(".")}: ${e.message}`),
+                    errors: ["Internal parsing error"],
+                };
+            }
+
+            if (!parsed.success) {
+                return {
+                    barcode: String(row.BARCODE || ""),
+                    name: String(row["MATERIAL NAME"] || ""),
+                    price: 0,
+                    min_buy: 0,
+                    min_stock: 0,
+                    unit: "",
+                    category: "",
+                    supplier: "",
+                    country: "",
+                    source: "LOCAL",
+                    lead_time: 0,
+                    errors: parsed.error.issues.map((e) => e.message),
                 };
             }
 
             const data = parsed.data;
+            const inputCountry = String(data.COUNTRY || data["LOCAL/IMPORT"] || "LOCAL").toUpperCase().trim();
+            
+            // Logic: Indonesia/Indo/Local/Lokal -> LOCAL, others -> IMPORT
+            const source = (inputCountry === "IMPORT" || (inputCountry !== "LOCAL" && inputCountry !== "LOKAL" && !inputCountry.includes("INDONESIA") && !inputCountry.includes("INDO"))) 
+                ? "IMPORT" 
+                : "LOCAL";
+            
             return {
-                barcode: data["BARCODE"],
-                name: data["MATERIAL NAME"],
-                price: Number(data["PRICE"]) || 0,
-                min_buy: data["MOQ"] ?? 0,
+                barcode: data.BARCODE.trim(),
+                name: String(data["MATERIAL NAME"] || "").trim(),
+                price: data.PRICE ?? 0,
+                min_buy: data.MOQ ?? 0,
                 min_stock: data["MIN STOK"] ?? 0,
-                unit: data["UOM"] || "",
-                category: data["CATEGORY"],
-                supplier: data["SUPPLIER"] || "",
-                country: data["LOCAL/IMPORT"] || "LOCAL",
+                unit: (data.UOM || "UNIT").toUpperCase().trim(),
+                category: data.CATEGORY.toUpperCase().trim(),
+                supplier: (data.SUPPLIER || "UNKNOWN").toUpperCase().trim(),
+                country: inputCountry,
+                source,
                 lead_time: data["LEAD TIME"] ?? 0,
                 errors: [],
             };
@@ -174,7 +200,7 @@ export class RawmatImportService {
                     supplierSlugMap.set(slug, {
                         name: d.supplier.trim(),
                         lowerName: d.supplier.trim().toLowerCase(),
-                        country: d.country?.toUpperCase() === "IMPORT" ? "IMPORT" : "LOCAL",
+                        country: d.country,
                     });
                 }
             }
@@ -223,19 +249,27 @@ export class RawmatImportService {
                     `;
                 }
 
-                // d) INSERT yang benar-benar baru (tidak ditemukan sama sekali)
-                const missing = supplierSlugs.filter((s) => !foundBySlug.has(s));
-                if (missing.length) {
-                    const missingNames     = missing.map((s) => supplierSlugMap.get(s)!.name);
-                    const missingCountries = missing.map((s) => supplierSlugMap.get(s)!.country);
-                    const inserted = await tx.$queryRaw<{ id: number; slug: string }[]>`
+                // d) UPSERT all suppliers from the excel to ensure "country" (Local/Import) is up to date
+                if (supplierSlugs.length) {
+                    const allNames = supplierSlugs.map((s) => supplierSlugMap.get(s)!.name);
+                    const allCountries = supplierSlugs.map((s) => supplierSlugMap.get(s)!.country);
+
+                    // Use atomic aligned unnest (standard PG way)
+                    // We update 'country' and 'updated_at' on conflict.
+                    // 'addresses' is defaulting to '-' for new records.
+                    const upserted = await tx.$queryRaw<{ id: number; slug: string }[]>`
                         INSERT INTO suppliers (name, slug, addresses, country, created_at, updated_at)
-                        SELECT unnest(${missingNames}::text[]), unnest(${missing}::text[]),
-                               '-', unnest(${missingCountries}::text[]), NOW(), NOW()
-                        ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
+                        SELECT t.name, t.slug, '-', t.country, NOW(), NOW()
+                        FROM unnest(
+                            ${allNames}::text[],
+                            ${supplierSlugs}::text[],
+                            ${allCountries}::text[]
+                        ) AS t(name, slug, country)
+                        ON CONFLICT (slug) DO UPDATE SET 
+                            updated_at = NOW()
                         RETURNING id, slug
                     `;
-                    for (const s of inserted) supplierSlugToId.set(s.slug, s.id);
+                    for (const s of upserted) supplierSlugToId.set(s.slug, s.id);
                 }
             }
 
@@ -250,6 +284,7 @@ export class RawmatImportService {
             const categoryIds: number[] = []; // 0 = NULL
             const supplierIds: number[] = []; // 0 = NULL
             const leadTimes: number[]   = []; // 0 = NULL
+            const sources: string[]     = [];
 
             // Dedup data by barcode (non-empty) to avoid "affect row a second time" error
             const dedupped = new Map<string, RawmatImportPreviewDTO>();
@@ -273,6 +308,7 @@ export class RawmatImportService {
                 categoryIds.push(row.category ? (categorySlugToId.get(normalizeSlug(row.category)) ?? 0) : 0);
                 supplierIds.push(row.supplier ? (supplierSlugToId.get(normalizeSlug(row.supplier)) ?? 0) : 0);
                 leadTimes.push(row.lead_time || 0);
+                sources.push(row.source);
             }
 
             // ── 5. Single batch upsert raw_materials (1 query) ────────────────────
@@ -283,7 +319,7 @@ export class RawmatImportService {
                 INSERT INTO raw_materials (
                     barcode, name, price, min_buy, min_stock,
                     unit_id, raw_mat_categories_id, supplier_id, lead_time,
-                    created_at, updated_at
+                    source, created_at, updated_at
                 )
                 SELECT
                     NULLIF(b, ''),
@@ -295,6 +331,7 @@ export class RawmatImportService {
                     NULLIF(ci, 0)::int,
                     NULLIF(si, 0)::int,
                     NULLIF(lt, 0)::int,
+                    s::"RawMaterialSource",
                     NOW(),
                     NOW()
                 FROM unnest(
@@ -306,8 +343,9 @@ export class RawmatImportService {
                     ${unitIds}::int[],
                     ${categoryIds}::int[],
                     ${supplierIds}::int[],
-                    ${leadTimes}::int[]
-                ) AS t(b, n, p, mb, ms, ui, ci, si, lt)
+                    ${leadTimes}::int[],
+                    ${sources}::text[]
+                ) AS t(b, n, p, mb, ms, ui, ci, si, lt, s)
                 ON CONFLICT (barcode) DO UPDATE SET
                     name                  = EXCLUDED.name,
                     price                 = EXCLUDED.price,
@@ -317,6 +355,7 @@ export class RawmatImportService {
                     raw_mat_categories_id = EXCLUDED.raw_mat_categories_id,
                     supplier_id           = EXCLUDED.supplier_id,
                     lead_time             = EXCLUDED.lead_time,
+                    source                = EXCLUDED.source,
                     updated_at            = NOW()
             `;
         }, { maxWait: 30000, timeout: 60000 });

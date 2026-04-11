@@ -4,15 +4,9 @@ import { ApiResponse } from "../../../lib/api.response.js";
 import { QueryIssuanceDTO, QueryIssuanceRekapDTO } from "./issuance.schema.js";
 
 export class IssuanceController {
-    static async create(c: Context) {
+    static async save(c: Context) {
         const body = c.get("body");
-        await IssuanceService.create(body);
-        return ApiResponse.sendSuccess(c, undefined, 201);
-    }
-
-    static async update(c: Context) {
-        const body = c.get("body");
-        await IssuanceService.update(body);
+        await IssuanceService.save(body);
         return ApiResponse.sendSuccess(c, undefined, 200);
     }
 

@@ -5,12 +5,16 @@ import {
     QueryRecomendationV2DTO, 
     RequestApproveWorkOrderSchema, 
     RequestSaveWorkOrderSchema,
-    RequestBulkSaveHorizonSchema
+    RequestBulkSaveHorizonSchema,
+    RequestSaveOpenPoSchema,
+    RequestUpdateMoqSchema,
+    RequestSaveNeedOverrideSchema,
+    RequestDeleteNeedOverrideSchema,
 } from "./recomendation-v2.schema.js";
 
 export class RecomendationV2Controller {
     static async list(c: Context) {
-        const { page, take, search, month, year, type, sales_months, forecast_months, sortBy, order } = c.req.query();
+        const { page, take, search, month, year, type, sales_months, forecast_months, po_months, sortBy, order } = c.req.query();
 
         const params: QueryRecomendationV2DTO = {
             page: page ? Number(page) : 1,
@@ -21,6 +25,7 @@ export class RecomendationV2Controller {
             type: type as QueryRecomendationV2DTO["type"],
             sales_months: sales_months ? Number(sales_months) : 3,
             forecast_months: forecast_months ? Number(forecast_months) : 3,
+            po_months: po_months ? Number(po_months) : 3,
             sortBy,
             order: order as QueryRecomendationV2DTO["order"],
         };
@@ -30,7 +35,7 @@ export class RecomendationV2Controller {
     }
     
     static async export(c: Context) {
-        const { search, month, year, type, sales_months, forecast_months, sortBy, order, visibleColumns, columnOrder } = c.req.query();
+        const { search, month, year, type, sales_months, forecast_months, po_months, sortBy, order, visibleColumns, columnOrder } = c.req.query();
 
         const params: QueryRecomendationV2DTO = {
             page: 1,
@@ -41,6 +46,7 @@ export class RecomendationV2Controller {
             type: type as QueryRecomendationV2DTO["type"],
             sales_months: sales_months ? Number(sales_months) : 3,
             forecast_months: forecast_months ? Number(forecast_months) : 3,
+            po_months: po_months ? Number(po_months) : 3,
             sortBy,
             order: order as QueryRecomendationV2DTO["order"],
             visibleColumns,
@@ -49,8 +55,8 @@ export class RecomendationV2Controller {
 
         const buffer = await RecomendationV2Service.export(params);
 
-        c.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        c.header("Content-Disposition", `attachment; filename=Rekomendasi_V2_${type?.toUpperCase()}_${month}_${year}.xlsx`);
+        c.header("Content-Type", "text/csv");
+        c.header("Content-Disposition", `attachment; filename=Rekomendasi_V2_${type?.toUpperCase()}_${month}_${year}.csv`);
 
         return c.body(buffer as any);
     }
@@ -80,6 +86,34 @@ export class RecomendationV2Controller {
         const body = await c.req.json();
         const validBody = RequestBulkSaveHorizonSchema.parse(body);
         const result = await RecomendationV2Service.bulkSaveHorizon(validBody);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async saveOpenPo(c: Context) {
+        const body = await c.req.json();
+        const validBody = RequestSaveOpenPoSchema.parse(body);
+        const result = await RecomendationV2Service.saveOpenPo(validBody);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async updateMoq(c: Context) {
+        const body = await c.req.json();
+        const validBody = RequestUpdateMoqSchema.parse(body);
+        const result = await RecomendationV2Service.updateMoq(validBody);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async saveNeedOverride(c: Context) {
+        const body = await c.req.json();
+        const validBody = RequestSaveNeedOverrideSchema.parse(body);
+        const result = await RecomendationV2Service.saveNeedOverride(validBody);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async deleteNeedOverride(c: Context) {
+        const body = await c.req.json();
+        const validBody = RequestDeleteNeedOverrideSchema.parse(body);
+        const result = await RecomendationV2Service.deleteNeedOverride(validBody);
         return ApiResponse.sendSuccess(c, result, 200);
     }
 }

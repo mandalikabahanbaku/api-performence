@@ -1,8 +1,17 @@
 import z from "zod";
 
+const sanitizeNumber = (val: unknown) => {
+    if (val === "" || val === null || val === undefined) return 0;
+    if (typeof val === "string") {
+        const cleaned = val.replace(/[^\d]/g, "");
+        return cleaned === "" ? 0 : Number(cleaned);
+    }
+    return Number(val);
+};
+
 export const RawMaterialInventoryImportRowSchema = z.object({
     "MATERIAL CODE": z.string().min(1, "Kode material wajib diisi"),
-    "CURRENT STOCK": z.coerce.number(),
+    "CURRENT STOCK": z.preprocess(sanitizeNumber, z.coerce.number()),
 });
 
 export type RawMaterialInventoryImportRow = z.infer<typeof RawMaterialInventoryImportRowSchema>;

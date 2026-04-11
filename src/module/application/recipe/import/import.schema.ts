@@ -1,9 +1,19 @@
 import z from "zod";
 
+const sanitizeNumber = (val: unknown) => {
+    if (val === "" || val === null || val === undefined) return 0;
+    if (typeof val === "string") {
+        let cleaned = val.replace(/,/g, ".");
+        cleaned = cleaned.replace(/[^\d.-]/g, "");
+        return cleaned === "" ? 0 : Number(cleaned);
+    }
+    return Number(val);
+};
+
 export const RecipeImportRowSchema = z.object({
     "PRODUCT CODE": z.string().min(1),
     "MATERIAL CODE": z.string().min(1),
-    QUANTITY: z.coerce.number(),
+    QUANTITY: z.preprocess(sanitizeNumber, z.coerce.number()),
 });
 
 export type RecipeImportRow = z.infer<typeof RecipeImportRowSchema>;

@@ -1,7 +1,7 @@
 import prisma from "../../../../config/prisma.js";
-import { Prisma } from "../../../../generated/prisma/client.js";
+import { Prisma, STATUS } from "../../../../generated/prisma/client.js";
 import { GetPagination } from "../../../../lib/utils/pagination.js";
-import { QueryProductStockDTO, ResponseProductStockDTO } from "./product.stock.schema.js";
+import { QueryProductStockDTO, ResponseProductStockDTO, RequestUpsertProductStockDTO } from "./product.stock.schema.js";
 
 export class ProductStockService {
     private static async getLatestPeriod() {
@@ -147,6 +147,51 @@ export class ProductStockService {
             },
             orderBy: {
                 name: "asc",
+            },
+        });
+    }
+
+    static async listProducts() {
+        return prisma.product.findMany({
+            where: {
+                deleted_at: null,
+                status: STATUS.ACTIVE,
+            },
+            select: {
+                id: true,
+                name: true,
+                code: true,
+            },
+            orderBy: {
+                name: "asc",
+            },
+        });
+    }
+
+    static async upsertStock(body: RequestUpsertProductStockDTO) {
+        const { product_id, warehouse_id, quantity, month, year } = body;
+
+        return prisma.productInventory.upsert({
+            where: {
+                product_id_warehouse_id_date_month_year: {
+                    product_id,
+                    warehouse_id,
+                    date: 1,
+                    month,
+                    year,
+                },
+            },
+            update: {
+                quantity,
+                updated_at: new Date(),
+            },
+            create: {
+                product_id,
+                warehouse_id,
+                date: 1,
+                quantity,
+                month,
+                year,
             },
         });
     }

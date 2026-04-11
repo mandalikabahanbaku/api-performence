@@ -34,11 +34,11 @@ export class ConsolidationController {
 
         c.header(
             "Content-Type",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "text/csv",
         );
         c.header(
             "Content-Disposition",
-            `attachment; filename=Konsolidasi_Purchase_${month}_${year}.xlsx`,
+            `attachment; filename=Konsolidasi_Purchase_${month}_${year}.csv`,
         );
 
         return c.body(buffer as any);

@@ -12,5 +12,5 @@ IssuanceRoutes.get("/:product_id", IssuanceController.detail);
 
 IssuanceRoutes.get("/", IssuanceController.list);
 
-IssuanceRoutes.put("/", validateBody(RequestIssuanceSchema), IssuanceController.update);
-IssuanceRoutes.post("/", validateBody(RequestIssuanceSchema), IssuanceController.create);
+IssuanceRoutes.put("/", validateBody(RequestIssuanceSchema), IssuanceController.save);
+IssuanceRoutes.post("/", validateBody(RequestIssuanceSchema), IssuanceController.save);
