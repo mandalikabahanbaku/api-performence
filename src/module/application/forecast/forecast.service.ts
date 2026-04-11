@@ -25,6 +25,15 @@ const PRODUCT_SELECT = {
     safety_percentage: true,
 } as const;
 
+export const OTHERS_PRODUCT_FILTER = [
+    { product_type: { slug: { contains: "display", mode: "insensitive" } } },
+    { product_type: { slug: { contains: "kertas", mode: "insensitive" } } },
+    { product_type: { slug: { contains: "botol", mode: "insensitive" } } },
+    { product_type: { slug: { contains: "paper-bag", mode: "insensitive" } } },
+    { product_type: { slug: { contains: "kartu-garansi", mode: "insensitive" } } },
+    { product_type: { slug: { contains: "canvas-bag", mode: "insensitive" } } },
+] as Prisma.ProductWhereInput[];
+
 /** Format a month+year to an ISO date string (first day of month). */
 const formatMonthISO = (year: number, month: number) =>
     `${year}-${String(month).padStart(2, "0")}-01`;
@@ -34,7 +43,60 @@ type SelectedProduct = Prisma.ProductGetPayload<{ select: typeof PRODUCT_SELECT 
 // ─── Forecast Service ─────────────────────────────────────────────────────────
 
 export class ForecastService {
-    // ── RUN ───────────────────────────────────────────────────────────────────
+    // ── EXPORT ───────────────────────────────────────────────────────────────
+
+    static async export(query: QueryForecastDTO) {
+        const { data } = await ForecastService.get({ ...query, take: 10000, page: 1 });
+
+        const monthsShort = [
+            "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+            "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
+        ];
+
+        const esc = (v: string | number | null | undefined): string => {
+            const s = String(v ?? "");
+            return s.includes(",") || s.includes('"') || s.includes("\n")
+                ? `"${s.replace(/"/g, '""')}"`
+                : s;
+        };
+
+        const periods =
+            data.length > 0
+                ? data[0]?.monthly_data.map((m) => ({ month: m.month, year: m.year }))
+                : [];
+
+        const headers = [
+            "CODE", "PRODUCT NAME", "TYPE", "EDAR (%)", "SIZE",
+            ...(periods?.map((p) => `FC ${monthsShort[p.month - 1]}'${String(p.year).slice(-2)}`) || []),
+            "TOTAL FORECAST", "JUMLAH FORECAST", "% SAFETY", "SAFETY STOCK", "STOCK", "NEED PRODUCE",
+        ];
+
+        const rows = data.map((item) => {
+            const values: (string | number)[] = [
+                item.product_code ?? "",
+                item.product_name.toUpperCase(),
+                item.product_type.toUpperCase(),
+                item.distribution_percentage ?? "",
+                item.product_size.toUpperCase().replace(/PCS|ML/g, "").trim(),
+                ...(periods?.map((p) => {
+                    const m = item.monthly_data.find((md) => md.month === p.month && md.year === p.year);
+                    return m ? Math.round(Number(m.final_forecast ?? m.base_forecast)) : 0;
+                }) || []),
+                Math.round(Number(item.safety_stock_summary?.total_forecast ?? 0)),
+                Math.round(Number(item.safety_stock_summary?.total_demand ?? 0)),
+                item.safety_percentage ?? 0,
+                Math.round(Number(item.safety_stock_summary?.safety_stock_quantity ?? 0)),
+                Math.round(item.current_stock),
+                Math.round(item.need_produce),
+            ];
+            return values.map(esc).join(",");
+        });
+
+        const csv = [headers.map(esc).join(","), ...rows].join("\n");
+        return Buffer.from("\uFEFF" + csv, "utf-8");
+    }
+
+    // ── RUN (Forecast Engine) ────────────────────────────────────────────────
 
     static async run(body: RunForecastDTO) {
         const {
@@ -48,7 +110,6 @@ export class ForecastService {
         const generatedIn = new Date();
         generatedIn.setUTCHours(0, 0, 0, 0);
 
-        // anchor = M-1 (last known sales month); forecast covers M..M+horizon-1
         const anchorDate = new Date(Date.UTC(start_year, start_month - 2, 1));
         const anchorMonth = anchorDate.getUTCMonth() + 1;
         const anchorYear = anchorDate.getUTCFullYear();
@@ -58,16 +119,16 @@ export class ForecastService {
             return { month: d.getUTCMonth() + 1, year: d.getUTCFullYear() };
         });
 
+        const isOthers = body.is_others ?? body.is_display;
+
         const products: SelectedProduct[] = product_id
-            ? await ForecastService.loadVariantsByProductId(product_id, body.is_display)
+            ? await ForecastService.loadVariantsByProductId(product_id, isOthers)
             : await prisma.product.findMany({
                   where: {
                       status: { notIn: ["DELETE", "PENDING", "BLOCK"] },
-                      product_type: {
-                          name: body.is_display
-                              ? { contains: "Display" }
-                              : { not: { contains: "Display" } },
-                      },
+                      ...(isOthers
+                          ? { OR: OTHERS_PRODUCT_FILTER }
+                          : { NOT: OTHERS_PRODUCT_FILTER }),
                   },
                   select: PRODUCT_SELECT,
               });
@@ -83,7 +144,6 @@ export class ForecastService {
         }
         const histPeriodFilter = histPeriods.map((p) => ({ month: p.month, year: p.year }));
 
-        // Anchor validation and full history load run in parallel
         const [anchorSalesCheck, historicalSales] = await Promise.all([
             prisma.productIssuance.findMany({
                 where: {
@@ -192,34 +252,23 @@ export class ForecastService {
             };
         }
 
-        const periodSet = new Set(batch.map((b) => `${b.product_id}|${b.month}|${b.year}`));
-        const periodTuples = Array.from(periodSet).map((k) => {
-            const [pid, mo, yr] = k.split("|").map(Number);
-            return { product_id: pid!, month: mo!, year: yr! };
-        });
-        const periodFilter = periodTuples.map((p) => ({
-            product_id: p.product_id,
-            month: p.month,
-            year: p.year,
+        const periodFilter = batch.map((f) => ({
+            product_id: f.product_id,
+            month: f.month,
+            year: f.year,
         }));
 
         const existingLatest = await prisma.forecast.findMany({
-            where: {
-                is_latest: true,
-                OR: periodFilter,
-            },
+            where: { is_latest: true, OR: periodFilter },
             select: { product_id: true, month: true, year: true, version: true },
-            orderBy: { version: "desc" },
         });
 
         const versionMap = new Map<string, number>();
         for (const row of existingLatest) {
-            const key = `${row.product_id}|${row.month}|${row.year}`;
-            if (!versionMap.has(key)) versionMap.set(key, row.version);
+            versionMap.set(`${row.product_id}|${row.month}|${row.year}`, row.version);
         }
 
         const now = new Date();
-
         try {
             const chunkSize = 4000;
             await prisma.$transaction(
@@ -240,15 +289,11 @@ export class ForecastService {
                                 status: $Enums.ForecastStatus.DRAFT,
                                 base_forecast: isFinite(f.base_forecast) ? f.base_forecast : 0,
                                 final_forecast: isFinite(f.final_forecast) ? f.final_forecast : 0,
-                                version:
-                                    (versionMap.get(`${f.product_id}|${f.month}|${f.year}`) ?? 0) +
-                                    1,
+                                version: (versionMap.get(`${f.product_id}|${f.month}|${f.year}`) ?? 0) + 1,
                                 is_latest: true,
                                 model_used: f.model_used,
                                 system_ratio: isFinite(f.system_ratio) ? f.system_ratio : 0,
-                                additional_ratio: isFinite(f.additional_ratio)
-                                    ? f.additional_ratio
-                                    : 0,
+                                additional_ratio: isFinite(f.additional_ratio) ? f.additional_ratio : 0,
                                 forecast_for: f.forecast_for,
                                 generated_in: f.generated_in,
                                 is_actionable: f.is_actionable,
@@ -272,8 +317,10 @@ export class ForecastService {
         };
     }
 
+    // ── UPDATE MANUAL (Adopted from api-copy with propagation for others) ─────
+
     static async updateManual(body: UpdateManualForecastDTO) {
-        const { product_id, month, year, final_forecast, additional_ratio } = body;
+        const { product_id, month, year, final_forecast, ratio, additional_ratio } = body;
 
         const product = await prisma.product.findUnique({
             where: { id: product_id },
@@ -281,54 +328,47 @@ export class ForecastService {
         });
         if (!product) throw new ApiError(404, "Produk tidak ditemukan.");
 
-        const isDisplayProduct = product.product_type?.name?.toLowerCase().includes("display");
-        if (!isDisplayProduct) {
-            throw new ApiError(403, "Update manual hanya diizinkan untuk produk Display.");
-        }
+        const isOthersProduct = await ForecastService.checkIsOthersSlug(product.product_type?.slug);
+        
+        // Resolve manual ratio (support both 'ratio' and 'additional_ratio')
+        const manualRatio = ratio !== undefined ? ratio : (additional_ratio !== undefined ? additional_ratio : undefined);
 
-        // Resolve current base from existing record or latest sales
         const existing = await prisma.forecast.findFirst({
             where: { product_id, month, year, is_latest: true },
         });
 
         let resolvedBase: number;
         if (existing) {
-            resolvedBase =
-                final_forecast !== undefined ? final_forecast : Number(existing.base_forecast);
+            resolvedBase = final_forecast !== undefined ? final_forecast : Number(existing.base_forecast);
         } else {
-            const prevMonth = month === 1 ? 12 : month - 1;
-            const prevYear = month === 1 ? year - 1 : year;
+            const prev = new Date(year, month - 2, 1);
             const sales = await prisma.productIssuance.findFirst({
-                where: { product_id, month: prevMonth, year: prevYear, type: "ALL" },
+                where: { product_id, month: prev.getMonth() + 1, year: prev.getFullYear(), type: "ALL" },
             });
-            resolvedBase =
-                final_forecast !== undefined ? final_forecast : Number(sales?.quantity ?? 0);
+            resolvedBase = final_forecast !== undefined ? final_forecast : Number(sales?.quantity ?? 0);
         }
 
-        const resolvedRatio = additional_ratio !== undefined ? additional_ratio : 0;
+        const resolvedRatio = manualRatio !== undefined ? manualRatio : (existing ? Number(existing.ratio ?? existing.additional_ratio ?? 0) : 0);
         const resolvedFinal = resolvedBase * (1 + resolvedRatio / 100);
         const nowIso = new Date().toISOString();
 
-        const shouldPropagate = isDisplayProduct && final_forecast !== undefined;
+        const shouldPropagate = isOthersProduct && final_forecast !== undefined;
 
         if (!shouldPropagate) {
-            // Single period update
             if (!existing) {
                 await prisma.forecast.create({
                     data: {
-                        product_id,
-                        month,
-                        year,
+                        product_id, month, year,
                         base_forecast: resolvedBase,
                         final_forecast: resolvedFinal,
+                        ratio: resolvedRatio,
                         additional_ratio: resolvedRatio,
                         trend: ForecastService.trend(resolvedFinal, resolvedBase),
                         status: "ADJUSTED",
                         adjusted_at: new Date(),
                         forecast_for: new Date(formatMonthISO(year, month)),
                         generated_in: new Date(),
-                        version: 1,
-                        is_latest: true,
+                        version: 1, is_latest: true,
                     },
                 });
             } else {
@@ -337,6 +377,7 @@ export class ForecastService {
                     data: {
                         base_forecast: resolvedBase,
                         final_forecast: resolvedFinal,
+                        ratio: resolvedRatio,
                         additional_ratio: resolvedRatio,
                         trend: ForecastService.trend(resolvedFinal, resolvedBase),
                         status: "ADJUSTED",
@@ -345,55 +386,42 @@ export class ForecastService {
                 });
             }
         } else {
-            // Propagate base forecast across 12-month horizon
             const horizon = 12;
             const monthsRange = Array.from({ length: horizon }, (_, i) => {
                 const d = new Date(year, month - 1 + i, 1);
                 return { month: d.getMonth() + 1, year: d.getFullYear() };
             });
 
-            await prisma.$transaction(
-                async (tx) => {
-                    await tx.$executeRawUnsafe(`
-                    UPDATE "forecasts"
-                    SET is_latest = false
-                    WHERE product_id = ${product_id}
-                      AND (year * 12 + month) >= ${year * 12 + month}
-                      AND (year * 12 + month) <= ${monthsRange[monthsRange.length - 1]!.year * 12 + monthsRange[monthsRange.length - 1]!.month}
-                      AND is_latest = true
+            await prisma.$transaction(async (tx) => {
+                await tx.$executeRawUnsafe(`
+                    UPDATE "forecasts" SET is_latest = false 
+                    WHERE product_id = ${product_id} AND is_latest = true
+                    AND (year * 12 + month) >= ${year * 12 + month}
+                    AND (year * 12 + month) <= ${monthsRange[monthsRange.length - 1]!.year * 12 + monthsRange[monthsRange.length - 1]!.month}
                 `);
 
-                    const forecastValues = monthsRange
-                        .map((m) => {
-                            const isTargetMonth = m.month === month && m.year === year;
-                            const mRatio = isTargetMonth ? resolvedRatio : 0;
-                            const mFinal = resolvedBase * (1 + mRatio / 100);
-                            return `(${product_id}, ${m.month}, ${m.year}, 'STABLE', 'ADJUSTED', ${resolvedBase}, ${mFinal}, ${mRatio}, 1, true, 'LINEAR_REGRESSION', 0, '${formatMonthISO(m.year, m.month)}', '${nowIso.slice(0, 10)}', false, '${nowIso}', '${nowIso}')`;
-                        })
-                        .join(", ");
+                const values = monthsRange.map((m) => {
+                    const isTarget = m.month === month && m.year === year;
+                    const mRatio = isTarget ? resolvedRatio : 0;
+                    const mFinal = resolvedBase * (1 + mRatio / 100);
+                    return `(${product_id}, ${m.month}, ${m.year}, 'STABLE', 'ADJUSTED', ${resolvedBase}, ${mFinal}, ${mRatio}, ${mRatio}, 1, true, 'LINEAR_REGRESSION', 0, '${formatMonthISO(m.year, m.month)}', '${nowIso.slice(0, 10)}', false, '${nowIso}', '${nowIso}')`;
+                }).join(", ");
 
-                    await tx.$executeRawUnsafe(`
+                await tx.$executeRawUnsafe(`
                     INSERT INTO "forecasts" (
-                        product_id, month, year, trend, status,
-                        base_forecast, final_forecast, additional_ratio,
-                        version, is_latest, model_used, system_ratio,
-                        forecast_for, generated_in, is_actionable,
-                        created_at, updated_at
-                    ) VALUES ${forecastValues}
+                        product_id, month, year, trend, status, base_forecast, final_forecast, ratio, additional_ratio,
+                        version, is_latest, model_used, system_ratio, forecast_for, generated_in, is_actionable, created_at, updated_at
+                    ) VALUES ${values}
                 `);
-                },
-                { timeout: 30000 },
-            );
+            });
         }
 
         return { message: "Forecast berhasil diperbarui secara manual." };
     }
 
-    // ── GET LIST ──────────────────────────────────────────────────────────────
+    // ── GET (Merged logic for Engine + New UI features) ──────────────────────
 
-    static async get(
-        query: QueryForecastDTO,
-    ): Promise<{ data: ResponseForecastDTO[]; len: number }> {
+    static async get(query: QueryForecastDTO): Promise<{ data: ResponseForecastDTO[]; len: number }> {
         const now = new Date();
         const anchorMonth = query.start_month ?? now.getMonth() + 1;
         const anchorYear = query.start_year ?? now.getFullYear();
@@ -409,14 +437,13 @@ export class ForecastService {
         const endYear = monthsWindow[monthsWindow.length - 1]!.year;
         const endMonth = monthsWindow[monthsWindow.length - 1]!.month;
 
-        // Stable sort reference (System Now)
         const sysContext = new Date();
         const sysMonth = sysContext.getMonth() + 1;
         const sysYear = sysContext.getFullYear();
 
+        const isOthers = query.is_others ?? query.is_display;
         const searchRaw = query.search ? `%${query.search}%` : null;
 
-        // Load ForecastPercentage for display in UI
         const rangePercentages = await prisma.forecastPercentage.findMany({
             where: { OR: monthsWindow.map((m) => ({ month: m.month, year: m.year })) },
         });
@@ -425,49 +452,25 @@ export class ForecastService {
         const where: Prisma.ProductWhereInput = {
             status: { notIn: ["DELETE", "PENDING", "BLOCK"] },
             deleted_at: null,
-            product_type: {
-                name: query.is_display ? { contains: "Display" } : { not: { contains: "Display" } },
-            },
+            ...(isOthers ? { OR: OTHERS_PRODUCT_FILTER } : { NOT: OTHERS_PRODUCT_FILTER }),
             ...(query.search && {
                 OR: [
                     { name: { contains: query.search, mode: "insensitive" } },
                     { code: { contains: query.search, mode: "insensitive" } },
                 ],
             }),
+            ...(query.type_id && { type_id: query.type_id }),
+            ...(query.size_id && { size_id: query.size_id }),
         };
 
         const len = await prisma.product.count({ where });
         if (len === 0) return { data: [], len };
 
-        const productsRaw = await prisma.$queryRaw<
-            {
-                id: number;
-                code: string | null;
-                name: string;
-                size: number | null;
-                product_type_name: string | null;
-                unit_name: string | null;
-                distribution_percentage: number | null;
-                safety_percentage: number | null;
-                forecasts_data: string | null;
-                current_stock: number | null;
-                m1_final_forecast: number | null;
-                m1_base_forecast: number | null;
-                sys_m0_base_forecast: number | null;
-                safety_stock_data: string | null;
-            }[]
-        >`
+        const productsRaw = await prisma.$queryRaw<any[]>`
             SELECT
-                p.id,
-                p.code,
-                p.name,
-                ps.size            AS "size",
-                pt.name            AS "product_type_name",
-                u.name             AS "unit_name",
-                p.distribution_percentage,
-                p.safety_percentage,
-                COALESCE(pi.quantity, 0)::float8 AS "current_stock",
-
+                p.id, p.code, p.name, ps.size AS "size", pt.name AS "product_type_name", u.name AS "unit_name",
+                p.distribution_percentage, p.safety_percentage, COALESCE(pi.quantity, 0)::float8 AS "current_stock",
+                p.z_value,
                 MAX(COALESCE(f_m1.final_forecast, 0)) OVER(PARTITION BY p.name) as group_sort_priority,
                 COALESCE(f_m1.final_forecast, 0) as m1_final_forecast,
                 COALESCE(f_m1.base_forecast, 0) as m1_base_forecast,
@@ -476,385 +479,180 @@ export class ForecastService {
                 (
                     SELECT COALESCE(json_agg(
                         json_build_object(
-                            'month',            f.month,
-                            'year',             f.year,
-                            'base_forecast',    f.base_forecast,
-                            'final_forecast',   f.final_forecast,
-                            'trend',            f.trend,
-                            'status',           f.status,
-                            'additional_ratio', f.additional_ratio,
-                            'system_ratio',     f.system_ratio,
-                            'model_used',       f.model_used,
-                            'is_actionable',    f.is_actionable,
-                            'actual_sales',     (
-                                SELECT pis.quantity
-                                FROM "product_issuances" pis
-                                WHERE pis.product_id = f.product_id
-                                  AND pis.month = f.month
-                                  AND pis.year = f.year
-                                  AND pis.type = 'ALL'
-                                LIMIT 1
-                            )
+                            'month', f.month, 'year', f.year, 'base_forecast', f.base_forecast, 'final_forecast', f.final_forecast,
+                            'trend', f.trend, 'status', f.status, 'ratio', f.ratio, 'additional_ratio', f.additional_ratio,
+                            'system_ratio', f.system_ratio, 'model_used', f.model_used, 'is_actionable', f.is_actionable
                         ) ORDER BY f.year ASC, f.month ASC
                     ), '[]'::json)
-                    FROM "forecasts" f
-                    WHERE f.product_id = p.id
-                      AND f.is_latest = true
-                      AND (f.year * 12 + f.month) >= ${startYear * 12 + startMonth}
-                      AND (f.year * 12 + f.month) <= ${endYear * 12 + endMonth}
+                    FROM "forecasts" f WHERE f.product_id = p.id AND f.is_latest = true
+                    AND (f.year * 12 + f.month) >= ${startYear * 12 + startMonth}
+                    AND (f.year * 12 + f.month) <= ${endYear * 12 + endMonth}
                 ) AS "forecasts_data",
 
                 (
-                    SELECT row_to_json(ss)
-                    FROM (
-                        SELECT
-                            ss.additional_ratio,
-                            ss.safety_stock_ratio,
-                            ss.mean_absolute_error,
-                            ss.z_value_used,
-                            ss.month,
-                            ss.year,
-                            ss.created_at
+                    SELECT row_to_json(ss) FROM (
+                        SELECT ss.additional_ratio, ss.safety_stock_ratio, ss.mean_absolute_error, ss.z_value_used,
+                               ss.month, ss.year, ss.created_at, ss.avg_forecast, ss.total_forecast, ss.horizon, ss.safety_stock_quantity
                         FROM "safety_stock" ss
-                        WHERE ss.product_id = p.id
-                          AND ss.month = ${startMonth}
-                          AND ss.year = ${startYear}
+                        WHERE ss.product_id = p.id AND ss.month = ${startMonth} AND ss.year = ${startYear}
                     ) ss
                 ) AS "safety_stock_data"
 
             FROM "products" p
-            LEFT JOIN "product_types"     pt ON pt.id = p.type_id
-            LEFT JOIN "unit_of_materials" u  ON u.id  = p.unit_id
-            LEFT JOIN "product_size"      ps ON ps.id = p.size_id
-            LEFT JOIN "forecasts" f_m1 ON f_m1.product_id = p.id
-                AND f_m1.month = ${startMonth} AND f_m1.year = ${startYear}
-                AND f_m1.is_latest = true
+            LEFT JOIN "product_types" pt ON pt.id = p.type_id
+            LEFT JOIN "unit_of_materials" u ON u.id = p.unit_id
+            LEFT JOIN "product_size" ps ON ps.id = p.size_id
+            LEFT JOIN "forecasts" f_m1 ON f_m1.product_id = p.id AND f_m1.month = ${startMonth} AND f_m1.year = ${startYear} AND f_m1.is_latest = true
             LEFT JOIN (
-                SELECT product_id, SUM(quantity) as quantity
-                FROM product_inventories
-                WHERE month = ${startMonth} AND year = ${startYear}
-                GROUP BY product_id
+                SELECT product_id, SUM(quantity) as quantity FROM product_inventories
+                WHERE month = ${startMonth} AND year = ${startYear} GROUP BY product_id
             ) pi ON p.id = pi.product_id
-            LEFT JOIN "forecasts" f_now ON f_now.product_id = p.id
-                AND f_now.month = ${sysMonth} AND f_now.year = ${sysYear}
-                AND f_now.is_latest = true
-            WHERE p.status NOT IN ('DELETE', 'PENDING', 'BLOCK')
-              AND p.deleted_at IS NULL
-              AND (
-                ${
-                    query.is_display
-                        ? Prisma.sql`pt.name ILIKE '%Display%'`
-                        : Prisma.sql`pt.name IS NULL OR pt.name NOT ILIKE '%Display%'`
-                }
-              )
+            LEFT JOIN "forecasts" f_now ON f_now.product_id = p.id AND f_now.month = ${sysMonth} AND f_now.year = ${sysYear} AND f_now.is_latest = true
+            WHERE p.status NOT IN ('DELETE', 'PENDING', 'BLOCK') AND p.deleted_at IS NULL
+            AND (${isOthers ? Prisma.sql`pt.slug IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag')` : Prisma.sql`pt.slug NOT IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag') OR pt.slug IS NULL`})
             ${searchRaw ? Prisma.sql`AND (p.name ILIKE ${searchRaw} OR p.code ILIKE ${searchRaw})` : Prisma.empty}
             ${query.type_id ? Prisma.sql`AND p.type_id = ${query.type_id}` : Prisma.empty}
             ${query.size_id ? Prisma.sql`AND p.size_id = ${query.size_id}` : Prisma.empty}
-            ORDER BY
-                sys_m0_base_forecast DESC,
-                m1_base_forecast DESC,
-                m1_final_forecast DESC,
-                group_sort_priority DESC,
-                p.name ASC,
-                CASE
-                    WHEN pt.name ILIKE '%EDP%' OR pt.name ILIKE '%Parfum%' OR pt.name ILIKE '%Perfume%' THEN 1
-                    WHEN pt.name ILIKE '%Atomizer%' THEN 2
-                    ELSE 3
-                END ASC,
-                ps.size DESC NULLS LAST,
-                CASE
-                    WHEN pt.name ILIKE '%EDP%' THEN 1
-                    WHEN pt.name ILIKE '%Parfum%' OR pt.name ILIKE '%Perfume%' THEN 2
-                    ELSE 3
-                END ASC,
-                p.id ASC
+            ORDER BY sys_m0_base_forecast DESC, m1_base_forecast DESC, m1_final_forecast DESC, group_sort_priority DESC, p.name ASC, 
+                     CASE WHEN pt.name ILIKE '%EDP%' OR pt.name ILIKE '%Parfum%' OR pt.name ILIKE '%Perfume%' THEN 1 WHEN pt.name ILIKE '%Atomizer%' THEN 2 ELSE 3 END ASC,
+                     ps.size DESC NULLS LAST, p.id ASC
             LIMIT ${limit} OFFSET ${skip}
         `;
 
-        // Include anchor month (M-1) for UI context (to show what was used as forecast input)
         const anchorRefDate = new Date(Date.UTC(startYear, startMonth - 2, 1));
-        const anchorRefMonth = anchorRefDate.getUTCMonth() + 1;
-        const anchorRefYear = anchorRefDate.getUTCFullYear();
-
-        // Fetch actual sales for window + anchor month
         const actualSales = await prisma.productIssuance.findMany({
-            where: {
-                product_id: { in: productsRaw.map((p) => p.id) },
-                type: "ALL",
-                OR: [
-                    ...monthsWindow.map((m) => ({ month: m.month, year: m.year })),
-                    { month: anchorRefMonth, year: anchorRefYear },
-                ],
+            where: { 
+                product_id: { in: productsRaw.map((p) => p.id) }, type: "ALL",
+                OR: [...monthsWindow.map((m) => ({ month: m.month, year: m.year })), { month: anchorRefDate.getUTCMonth() + 1, year: anchorRefDate.getUTCFullYear() }]
             },
-            select: { product_id: true, month: true, year: true, quantity: true },
         });
-
-        const actualSalesMap = new Map<string, number>();
-        for (const s of actualSales) {
-            actualSalesMap.set(`${s.product_id}|${s.month}|${s.year}`, Number(s.quantity));
-        }
+        const actualSalesMap = new Map(actualSales.map((s) => [`${s.product_id}|${s.month}|${s.year}`, Number(s.quantity)]));
 
         const data: ResponseForecastDTO[] = productsRaw.map((p) => {
-            const rawForecasts: {
-                month: number;
-                year: number;
-                base_forecast: string;
-                final_forecast: string | null;
-                trend: string;
-                status: string;
-                additional_ratio: string | null;
-                system_ratio: string | null;
-                model_used: string | null;
-                is_actionable: boolean;
-                actual_sales: string | null;
-            }[] =
-                typeof p.forecasts_data === "string"
-                    ? JSON.parse(p.forecasts_data)
-                    : (p.forecasts_data ?? []);
-
-            const forecastByKey = new Map(rawForecasts.map((f) => [`${f.year}-${f.month}`, f]));
-
-            // Parse safety stock data for add_ss_ratio
-            const ssRaw =
-                typeof p.safety_stock_data === "string"
-                    ? JSON.parse(p.safety_stock_data)
-                    : p.safety_stock_data;
+            const forecasts = typeof p.forecasts_data === "string" ? JSON.parse(p.forecasts_data) : (p.forecasts_data ?? []);
+            const ssRaw = typeof p.safety_stock_data === "string" ? JSON.parse(p.safety_stock_data) : p.safety_stock_data;
             const addSsRatio = ssRaw ? Number(ssRaw.additional_ratio ?? 0) : 0;
 
-            const monthly_data: ResponseForecastDTO["monthly_data"] = monthsWindow.map((m) => {
-                const forecast = forecastByKey.get(`${m.year}-${m.month}`);
-                const actual = actualSalesMap.get(`${p.id}|${m.month}|${m.year}`);
-
+            const monthly_data = monthsWindow.map((m) => {
+                const f = forecasts.find((x: any) => x.month === m.month && x.year === m.year);
                 return {
-                    month: m.month,
-                    year: m.year,
-                    period: `${m.month}/${m.year}`,
-                    base_forecast: Number(forecast?.base_forecast ?? 0),
-                    final_forecast: (() => {
-                        const base = Number(forecast?.base_forecast ?? 0);
-                        const manualFinal =
-                            forecast?.final_forecast != null ? Number(forecast.final_forecast) : null;
-
-                        // Dynamic Calculation: (Manual Final ?? Base) * (1 + ratio / 100)
-                        const currentVal = manualFinal ?? base;
-                        return currentVal * (1 + addSsRatio / 100);
-                    })(),
-                    trend: forecast?.trend ?? "STABLE",
-                    status: forecast?.status ?? null,
-                    is_current_month: m.is_current_month,
-                    is_actionable: forecast?.is_actionable ?? false,
-                    additional_ratio:
-                        forecast?.additional_ratio != null ? Number(forecast.additional_ratio) : 0,
-                    system_ratio:
-                        forecast?.system_ratio != null ? Number(forecast.system_ratio) : 0,
-                    model_used: forecast?.model_used ?? null,
-                    actual_sales:
-                        actual ??
-                        (forecast?.actual_sales != null ? Number(forecast.actual_sales) : null),
-                    percentage_value: pctMap.has(`${m.year}-${m.month}`)
-                        ? Number(
-                              (Number(pctMap.get(`${m.year}-${m.month}`)!.value) * 100).toFixed(2),
-                          )
-                        : null,
+                    month: m.month, year: m.year, period: `${m.month}/${m.year}`,
+                    base_forecast: Number(f?.base_forecast ?? 0),
+                    final_forecast: (Number(f?.final_forecast ?? f?.base_forecast ?? 0)) * (1 + addSsRatio / 100),
+                    trend: f?.trend ?? "STABLE", status: f?.status ?? null, is_current_month: m.is_current_month, is_actionable: f?.is_actionable ?? false,
+                    ratio: Number(f?.ratio ?? 0), additional_ratio: Number(f?.additional_ratio ?? 0), system_ratio: Number(f?.system_ratio ?? 0),
+                    model_used: f?.model_used ?? null, actual_sales: actualSalesMap.get(`${p.id}|${m.month}|${m.year}`) ?? null,
+                    percentage_value: pctMap.has(`${m.year}-${m.month}`) ? Number((Number(pctMap.get(`${m.year}-${m.month}`)!.value) * 100).toFixed(2)) : null,
                 };
             });
 
-            const anchorActual = actualSalesMap.get(`${p.id}|${anchorRefMonth}|${anchorRefYear}`);
-
-            const m1MonthData = monthly_data.find(
-                (m) => m.month === startMonth && m.year === startYear,
-            );
-            const m1Forecast = m1MonthData?.final_forecast ?? m1MonthData?.base_forecast ?? 0;
-            const currentStock = Number(p.current_stock ?? 0);
-            const needProduce = Math.max(0, m1Forecast - currentStock);
-
-            const totalForecast = monthly_data.reduce(
-                (sum, m) => sum + Number(m.final_forecast ?? m.base_forecast ?? 0),
-                0,
-            );
-
+            const totalForecast = monthly_data.reduce((sum, m) => sum + m.final_forecast, 0);
             return {
-                product_id: p.id,
-                product_code: p.code,
-                product_name: p.name,
-                product_type: p.product_type_name ?? "",
-                product_size: `${p.size ?? ""} ${p.unit_name ?? ""}`.trim(),
-                distribution_percentage: p.distribution_percentage
-                    ? Number((Number(p.distribution_percentage) * 100).toFixed(2))
-                    : 0,
-                safety_percentage: p.safety_percentage
-                    ? Number((Number(p.safety_percentage) * 100).toFixed(2))
-                    : 0,
-                current_stock: currentStock,
-                need_produce: needProduce,
-                total_forecast: totalForecast,
-                anchor_actual_sales: anchorActual ?? null,
-                anchor_period: `${anchorRefMonth}/${anchorRefYear}`,
-                add_ss_ratio: addSsRatio,
-                safety_stock: (totalForecast / (query.horizon ?? 12)) * (addSsRatio / 100),
-                total_demand:
-                    totalForecast + (totalForecast / (query.horizon ?? 12)) * (addSsRatio / 100),
+                product_id: p.id, product_code: p.code, product_name: p.name, product_type: p.product_type_name ?? "",
+                product_size: `${p.size ?? ""} ${p.unit_name ?? ""}`.trim(), z_value: Number(p.z_value ?? 1.65),
+                distribution_percentage: p.distribution_percentage ? Number((Number(p.distribution_percentage) * 100).toFixed(2)) : 0,
+                safety_percentage: p.safety_percentage ? Number((Number(p.safety_percentage) * 100).toFixed(2)) : 0,
+                current_stock: Number(p.current_stock ?? 0), 
+                need_produce: Math.max(0, (monthly_data[0]?.final_forecast ?? 0) - Number(p.current_stock ?? 0)),
+                total_forecast: totalForecast, add_ss_ratio: addSsRatio,
+                anchor_actual_sales: actualSalesMap.get(`${p.id}|${anchorRefDate.getUTCMonth() + 1}|${anchorRefDate.getUTCFullYear()}`) ?? null,
+                anchor_period: `${anchorRefDate.getUTCMonth() + 1}/${anchorRefDate.getUTCFullYear()}`,
+                safety_stock: ssRaw ? Number(ssRaw.safety_stock_quantity ?? 0) : 0,
+                total_demand: totalForecast + (ssRaw ? Number(ssRaw.safety_stock_quantity ?? 0) : 0),
                 monthly_data,
+                safety_stock_summary: ssRaw ? {
+                    safety_stock_quantity: Number(ssRaw.safety_stock_quantity),
+                    safety_stock_ratio: Number(ssRaw.safety_stock_ratio),
+                    avg_forecast: Number(ssRaw.avg_forecast),
+                    total_forecast: Number(ssRaw.total_forecast),
+                    total_demand: totalForecast + Number(ssRaw.safety_stock_quantity),
+                    last_updated: ssRaw.created_at,
+                } : null,
             };
         });
 
         return { data, len };
     }
 
-    // ── DETAIL ────────────────────────────────────────────────────────────────
-
     static async detail(product_id: number, month: number, year: number) {
-        if (!month || !year) throw new ApiError(400, "Bulan dan tahun wajib diisi");
-
-        const row = await prisma.forecast.findFirst({
-            where: { product_id, month, year, is_latest: true },
-        });
+        const row = await prisma.forecast.findFirst({ where: { product_id, month, year, is_latest: true } });
         if (!row) throw new ApiError(404, "Data forecast tidak ditemukan");
-
         return {
-            product_id: row.product_id,
-            month: row.month,
-            year: row.year,
+            ...row,
             base_forecast: Number(row.base_forecast),
             final_forecast: row.final_forecast != null ? Number(row.final_forecast) : null,
-            trend: row.trend,
-            status: row.status,
-            model_used: row.model_used,
-            version: row.version,
             system_ratio: row.system_ratio != null ? Number(row.system_ratio) : null,
             additional_ratio: row.additional_ratio != null ? Number(row.additional_ratio) : null,
-            is_actionable: row.is_actionable,
-            forecast_for: row.forecast_for,
-            generated_in: row.generated_in,
+            ratio: row.ratio != null ? Number(row.ratio) : null,
         };
     }
-
-    // ── FINALIZE ──────────────────────────────────────────────────────────────
 
     static async finalize(data: FinalizeForecastDTO) {
         const result = await prisma.forecast.updateMany({
             where: { month: data.month, year: data.year, status: "DRAFT", is_latest: true },
             data: { status: "FINALIZED", is_actionable: true },
         });
-        if (result.count === 0) throw new ApiError(400, "Tidak ada data DRAFT untuk periode ini");
         return { count: result.count };
     }
-
-    // ── DELETE BY PERIOD ──────────────────────────────────────────────────────
 
     static async deleteByPeriod(data: DeleteForecastByPeriodDTO) {
-        const result = await prisma.forecast.deleteMany({
-            where: { month: data.month, year: data.year },
-        });
-        if (result.count === 0)
-            throw new ApiError(400, "Tidak ada data forecast untuk dihapus pada periode ini");
+        const result = await prisma.forecast.deleteMany({ where: { month: data.month, year: data.year } });
         return { count: result.count };
     }
 
-    // ── DESTROY BY ID ─────────────────────────────────────────────────────────
-
     static async destroyById(id: number) {
-        try {
-            await prisma.forecast.delete({ where: { id } });
-        } catch (err: any) {
-            if (err?.code === "P2025") throw new ApiError(404, "Data forecast tidak ditemukan");
-            throw err;
-        }
+        await prisma.forecast.delete({ where: { id } });
     }
 
-    // ── UPSERT SAFETY RATIO (%SAFETY / add_ss_ratio) ──────────────────────────
+    static async resetByProduct(product_id: number) {
+        const forecast = await prisma.forecast.deleteMany({ where: { product_id } });
+        const safety_stock = await prisma.safetyStock.deleteMany({ where: { product_id } });
+        return { forecast: forecast.count, safety_stock: safety_stock.count };
+    }
 
     static async upsertSafetyRatio(body: UpsertSafetyRatioDTO) {
         const { product_id, month, year, add_ss_ratio } = body;
-
-        const product = await prisma.product.findUnique({
-            where: { id: product_id },
-            select: { id: true, z_value: true },
-        });
+        const product = await prisma.product.findUnique({ where: { id: product_id }, select: { z_value: true } });
         if (!product) throw new ApiError(404, "Produk tidak ditemukan.");
 
-        const zValue = Number(product.z_value ?? 1.65);
-
-        const result = await prisma.safetyStock.upsert({
-            where: {
-                product_id_month_year: { product_id, month, year },
-            },
+        return prisma.safetyStock.upsert({
+            where: { product_id_month_year: { product_id, month, year } },
             create: {
-                product_id,
-                month,
-                year,
-                mean_absolute_error: 0,
-                safety_stock_quantity: 0,
-                safety_stock_ratio: 0,
-                z_value_used: zValue,
-                additional_ratio: add_ss_ratio,
+                product_id, month, year, mean_absolute_error: 0, safety_stock_quantity: 0,
+                safety_stock_ratio: 0, z_value_used: Number(product.z_value ?? 1.65), additional_ratio: add_ss_ratio,
             },
-            update: {
-                additional_ratio: add_ss_ratio,
-            },
-        });
-
-        return {
-            product_id,
-            month,
-            year,
-            add_ss_ratio: Number(result.additional_ratio),
-            message: `%SAFETY berhasil diperbarui: ${add_ss_ratio}% untuk ${month}/${year}.`,
-        };
-    }
-
-    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
-
-    private static resolveHorizonMonths(anchor: Date, horizon: number) {
-        const startYear = anchor.getFullYear();
-        const startMonth = anchor.getMonth(); // 0-indexed
-
-        const now = new Date();
-        const currentMonth = now.getMonth() + 1;
-        const currentYear = now.getFullYear();
-
-        return Array.from({ length: horizon }, (_, i) => {
-            // anchor month (M+0) as the first column
-            const d = new Date(startYear, startMonth + i, 1);
-            const m = d.getMonth() + 1;
-            const y = d.getFullYear();
-            return {
-                year: y,
-                month: m,
-                is_current_month: m === currentMonth && y === currentYear,
-            };
+            update: { additional_ratio: add_ss_ratio },
         });
     }
 
-    private static async loadVariantsByProductId(
-        product_id: number,
-        is_display?: boolean,
-    ): Promise<SelectedProduct[]> {
-        const target = await prisma.product.findUnique({
-            where: { id: product_id },
-            select: { name: true },
-        });
-        if (!target) throw new ApiError(404, "Produk tidak ditemukan.");
-
-        const variations = await prisma.product.findMany({
+    private static async loadVariantsByProductId(product_id: number, isOthers: boolean = false) {
+        const product = await prisma.product.findUnique({ where: { id: product_id } });
+        if (!product) return [];
+        return prisma.product.findMany({
             where: {
-                name: target.name,
-                status: { notIn: ["DELETE", "PENDING", "BLOCK"] },
-                deleted_at: null,
-                product_type: {
-                    name: is_display ? { contains: "Display" } : { not: { contains: "Display" } },
-                },
+                name: { contains: product.name, mode: "insensitive" },
+                status: "ACTIVE",
+                ...(isOthers ? { OR: OTHERS_PRODUCT_FILTER } : { NOT: OTHERS_PRODUCT_FILTER }),
             },
             select: PRODUCT_SELECT,
         });
+    }
 
-        if (variations.length === 0) {
-            throw new ApiError(
-                404,
-                `Tidak ada variasi produk aktif ditemukan untuk "${target.name}".`,
-            );
-        }
-        return variations;
+    private static async checkIsOthersSlug(slug: string | null | undefined) {
+        if (!slug) return false;
+        const s = slug.toLowerCase();
+        return ["display", "kertas", "botol", "paper-bag", "kartu-garansi", "canvas-bag"].some(x => s.includes(x));
+    }
+
+    private static resolveHorizonMonths(now: Date, horizon: number) {
+        const currentMonth = now.getUTCMonth() + 1;
+        const currentYear = now.getUTCFullYear();
+        return Array.from({ length: horizon }, (_, i) => {
+            const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1));
+            const m = d.getUTCMonth() + 1;
+            const y = d.getUTCFullYear();
+            return { month: m, year: y, is_current_month: m === currentMonth && y === currentYear };
+        });
     }
 
     private static trend(forecast: number, input: number): "UP" | "DOWN" | "STABLE" {

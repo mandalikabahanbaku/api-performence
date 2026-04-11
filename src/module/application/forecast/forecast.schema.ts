@@ -8,6 +8,7 @@ export const RunForecastSchema = z.object({
     start_year: z.coerce.number().int().min(2000).max(2100),
     horizon: z.coerce.number().int().min(1).max(12).default(12),
     is_display: z.boolean().optional(),
+    is_others: z.boolean().optional(),
     model_used: z
         .enum([
             "SIMPLE_MOVING_AVERAGE",
@@ -32,6 +33,7 @@ export const QueryForecastSchema = z.object({
     take: z.coerce.number().int().positive().max(1000).default(25).optional(),
     horizon: z.coerce.number().int().min(3).max(12).default(12).optional(),
     is_display: z.coerce.boolean().optional(),
+    is_others: z.coerce.boolean().optional(),
     type_id: z.coerce.number().optional(),
     size_id: z.coerce.number().optional(),
     start_month: z.coerce.number().int().min(1).max(12).optional(),
@@ -76,6 +78,7 @@ export const UpdateManualForecastSchema = z.object({
     month: z.coerce.number().int().min(1).max(12),
     year: z.coerce.number().int().min(2000).max(2100),
     final_forecast: z.coerce.number().min(0).optional(),
+    ratio: z.coerce.number().optional(),
     additional_ratio: z.coerce.number().optional(),
 });
 
@@ -105,6 +108,7 @@ export type ResponseForecastDTO = {
     product_name: string;
     product_type: string;
     product_size: string;
+    z_value: number;
     distribution_percentage: number | null;
     safety_percentage: number | null;
     current_stock: number;
@@ -125,10 +129,19 @@ export type ResponseForecastDTO = {
         status: string | null;
         is_current_month: boolean;
         is_actionable: boolean;
+        ratio: number;
         additional_ratio: number;
         system_ratio: number;
         model_used: string | null;
         actual_sales: number | null;
         percentage_value: number | null;
     }>;
+    safety_stock_summary: {
+        safety_stock_quantity: number | null;
+        safety_stock_ratio: number | null;
+        avg_forecast: number | null;
+        total_forecast: number | null;
+        total_demand: number | null;
+        last_updated: Date | null;
+    } | null;
 };

@@ -35,6 +35,17 @@ export class ForecastController {
         return ApiResponse.sendSuccess(c, result, 200);
     }
 
+    static async export(c: Context) {
+        const query = QueryForecastSchema.parse(c.req.query());
+        const buffer = await ForecastService.export(query);
+        const filename = `Forecast_Report_${new Date().toISOString().split("T")[0]}.csv`;
+
+        c.header("Content-Type", "text/csv");
+        c.header("Content-Disposition", `attachment; filename="${filename}"`);
+
+        return c.body(buffer as any);
+    }
+
     static async detail(c: Context) {
         const product_id = Number(c.req.param("product_id"));
         const { month, year } = c.req.query();
@@ -77,6 +88,18 @@ export class ForecastController {
             email: session.email,
         } satisfies CreateLoggingActivityDTO);
         return ApiResponse.sendSuccess(c, { id }, 200);
+    }
+
+    static async resetByProduct(c: Context) {
+        const product_id = Number(c.req.param("product_id"));
+        const session = c.get("session");
+        const result = await ForecastService.resetByProduct(product_id);
+        await CreateLogger({
+            activity: "DELETE",
+            description: `${Table} Reset Product Forecast: ID ${product_id}. Rows removed: ${result.forecast} forecast, ${result.safety_stock} safety stock`,
+            email: session.email,
+        } satisfies CreateLoggingActivityDTO);
+        return ApiResponse.sendSuccess(c, result, 200);
     }
 
     static async updateManual(c: Context) {

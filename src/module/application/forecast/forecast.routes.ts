@@ -20,7 +20,9 @@ ForecastRoutes.patch("/finalize", validateBody(FinalizeForecastSchema), Forecast
 ForecastRoutes.delete("/period", validateBody(DeleteForecastByPeriodSchema), ForecastController.deleteByPeriod);
 ForecastRoutes.patch("/manual-update", validateBody(UpdateManualForecastSchema), ForecastController.updateManual);
 ForecastRoutes.patch("/safety-ratio", validateBody(UpsertSafetyRatioSchema), ForecastController.upsertSafetyRatio);
+ForecastRoutes.delete("/reset/:product_id", ForecastController.resetByProduct);
 
+ForecastRoutes.get("/export", ForecastController.export);
 ForecastRoutes.get("/", ForecastController.list);
 ForecastRoutes.post("/", validateBody(RunForecastSchema), ForecastController.run);
 
