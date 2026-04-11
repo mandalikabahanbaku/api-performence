@@ -24,6 +24,7 @@ const PRODUCT_SELECT = {
     distribution_percentage: true,
     safety_percentage: true,
     z_value: true,
+    lead_time: true,
 } as const;
 
 export const OTHERS_PRODUCT_FILTER = [
@@ -258,7 +259,10 @@ export class ForecastService {
 
             // Calculate Safety Stock
             const zValue = Number(product.z_value ?? 1.65);
-            const ssQty = zValue * mae; // Simple SS = Z * MAE
+            const leadTimeDays = Number(product.lead_time ?? 30);
+            const leadTimeFactor = Math.sqrt(leadTimeDays / 30); // Normalized to months
+            
+            const ssQty = zValue * mae * leadTimeFactor; 
             const totalFc = forecasted.reduce((a, b) => a + b, 0);
             const avgFc = horizon > 0 ? totalFc / horizon : 0;
             const ssRatio = avgFc > 0 ? (ssQty / avgFc) * 100 : 0;
@@ -590,13 +594,15 @@ export class ForecastService {
             const forecasts = typeof p.forecasts_data === "string" ? JSON.parse(p.forecasts_data) : (p.forecasts_data ?? []);
             const ssRaw = typeof p.safety_stock_data === "string" ? JSON.parse(p.safety_stock_data) : p.safety_stock_data;
             const addSsRatio = ssRaw ? Number(ssRaw.additional_ratio ?? 0) : 0;
+            const engineSsRatio = ssRaw ? Number(ssRaw.safety_stock_ratio ?? 0) : 0;
+            const totalSsRatio = engineSsRatio + addSsRatio;
 
             const monthly_data = monthsWindow.map((m) => {
                 const f = forecasts.find((x: any) => x.month === m.month && x.year === m.year);
                 return {
                     month: m.month, year: m.year, period: `${m.month}/${m.year}`,
                     base_forecast: Number(f?.base_forecast ?? 0),
-                    final_forecast: (Number(f?.final_forecast ?? f?.base_forecast ?? 0)) * (1 + addSsRatio / 100),
+                    final_forecast: (Number(f?.final_forecast ?? f?.base_forecast ?? 0)) * (1 + totalSsRatio / 100),
                     trend: f?.trend ?? "STABLE", status: f?.status ?? null, is_current_month: m.is_current_month, is_actionable: f?.is_actionable ?? false,
                     ratio: Number(f?.ratio ?? 0), additional_ratio: Number(f?.additional_ratio ?? 0), system_ratio: Number(f?.system_ratio ?? 0),
                     model_used: f?.model_used ?? null, actual_sales: actualSalesMap.get(`${p.id}|${m.month}|${m.year}`) ?? null,
@@ -621,6 +627,7 @@ export class ForecastService {
                 safety_stock_summary: ssRaw ? {
                     safety_stock_quantity: Number(ssRaw.safety_stock_quantity),
                     safety_stock_ratio: Number(ssRaw.safety_stock_ratio),
+                    additional_ratio: Number(ssRaw.additional_ratio),
                     avg_forecast: Number(ssRaw.avg_forecast),
                     total_forecast: Number(ssRaw.total_forecast),
                     total_demand: totalForecast + Number(ssRaw.safety_stock_quantity),

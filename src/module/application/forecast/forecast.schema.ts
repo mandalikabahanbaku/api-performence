@@ -139,6 +139,7 @@ export type ResponseForecastDTO = {
     safety_stock_summary: {
         safety_stock_quantity: number | null;
         safety_stock_ratio: number | null;
+        additional_ratio: number | null;
         avg_forecast: number | null;
         total_forecast: number | null;
         total_demand: number | null;
