@@ -23,6 +23,7 @@ const PRODUCT_SELECT = {
     size: { select: { size: true } },
     distribution_percentage: true,
     safety_percentage: true,
+    z_value: true,
 } as const;
 
 export const OTHERS_PRODUCT_FILTER = [
@@ -66,7 +67,7 @@ export class ForecastService {
                 : [];
 
         const headers = [
-            "CODE", "PRODUCT NAME", "TYPE", "EDAR (%)", "SIZE",
+            "CODE", "PRODUCT NAME", "TYPE", "SIZE",
             ...(periods?.map((p) => `FC ${monthsShort[p.month - 1]}'${String(p.year).slice(-2)}`) || []),
             "TOTAL FORECAST", "JUMLAH FORECAST", "% SAFETY", "SAFETY STOCK", "STOCK", "NEED PRODUCE",
         ];
@@ -76,7 +77,6 @@ export class ForecastService {
                 item.product_code ?? "",
                 item.product_name.toUpperCase(),
                 item.product_type.toUpperCase(),
-                item.distribution_percentage ?? "",
                 item.product_size.toUpperCase().replace(/PCS|ML/g, "").trim(),
                 ...(periods?.map((p) => {
                     const m = item.monthly_data.find((md) => md.month === p.month && md.year === p.year);
@@ -196,6 +196,18 @@ export class ForecastService {
             is_actionable: boolean;
         }[] = [];
 
+        const ssBatch: {
+            product_id: number;
+            month: number;
+            year: number;
+            mae: number;
+            ss_qty: number;
+            ss_ratio: number;
+            z_value: number;
+            total_forecast: number;
+            avg_forecast: number;
+        }[] = [];
+
         const skippedProducts: string[] = [];
 
         for (const product of products) {
@@ -213,7 +225,7 @@ export class ForecastService {
                 continue;
             }
 
-            const { forecasted, modelActuallyUsed } = runForecastEngine(
+            const { forecasted, modelActuallyUsed, mae } = runForecastEngine(
                 model_used,
                 history,
                 horizon,
@@ -223,6 +235,7 @@ export class ForecastService {
             const firstForecastVal = forecasted[0] ?? 0;
             const system_ratio = lastActual > 0 ? (firstForecastVal - lastActual) / lastActual : 0;
 
+            // Store monthly forecasts
             for (let i = 0; i < monthsRange.length; i++) {
                 const m = monthsRange[i]!;
                 const projected = forecasted[i] ?? 0;
@@ -242,6 +255,25 @@ export class ForecastService {
                     is_actionable: i === 0,
                 });
             }
+
+            // Calculate Safety Stock
+            const zValue = Number(product.z_value ?? 1.65);
+            const ssQty = zValue * mae; // Simple SS = Z * MAE
+            const totalFc = forecasted.reduce((a, b) => a + b, 0);
+            const avgFc = horizon > 0 ? totalFc / horizon : 0;
+            const ssRatio = avgFc > 0 ? (ssQty / avgFc) * 100 : 0;
+
+            ssBatch.push({
+                product_id: product.id,
+                month: start_month,
+                year: start_year,
+                mae: isFinite(mae) ? mae : 0,
+                ss_qty: isFinite(ssQty) ? ssQty : 0,
+                ss_ratio: isFinite(ssRatio) ? ssRatio : 0,
+                z_value: zValue,
+                total_forecast: totalFc,
+                avg_forecast: avgFc,
+            });
         }
 
         if (batch.length === 0) {
@@ -255,7 +287,7 @@ export class ForecastService {
         const nowIso = new Date().toISOString();
 
         try {
-            // Build raw SQL VALUES — safe because all values are numbers/enums from engine, not user input
+            // 1. Bulk Upsert Forecasts
             const CHUNK_SIZE = 2000;
             for (let ci = 0; ci < batch.length; ci += CHUNK_SIZE) {
                 const chunk = batch.slice(ci, ci + CHUNK_SIZE);
@@ -296,6 +328,32 @@ export class ForecastService {
                         generated_in     = EXCLUDED.generated_in,
                         is_actionable    = EXCLUDED.is_actionable,
                         updated_at       = EXCLUDED.updated_at
+                `);
+            }
+
+            // 2. Bulk Upsert Safety Stock
+            for (let ci = 0; ci < ssBatch.length; ci += CHUNK_SIZE) {
+                const chunk = ssBatch.slice(ci, ci + CHUNK_SIZE);
+                const valueRows = chunk.map((s) => 
+                    `(${s.product_id}, ${s.month}, ${s.year}, ${s.mae}, ${s.ss_qty}, ${s.ss_ratio}, ${s.z_value}, 0, ${s.avg_forecast}, ${horizon}, ${s.total_forecast}, '${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`
+                ).join(",\n");
+
+                await prisma.$executeRawUnsafe(`
+                    INSERT INTO "safety_stock" (
+                        product_id, month, year, mean_absolute_error, safety_stock_quantity,
+                        safety_stock_ratio, z_value_used, additional_ratio, avg_forecast,
+                        horizon, total_forecast, created_at, updated_at
+                    ) VALUES ${valueRows}
+                    ON CONFLICT (product_id, month, year)
+                    DO UPDATE SET
+                        mean_absolute_error   = EXCLUDED.mean_absolute_error,
+                        safety_stock_quantity = EXCLUDED.safety_stock_quantity,
+                        safety_stock_ratio    = EXCLUDED.safety_stock_ratio,
+                        z_value_used          = EXCLUDED.z_value_used,
+                        avg_forecast          = EXCLUDED.avg_forecast,
+                        horizon               = EXCLUDED.horizon,
+                        total_forecast        = EXCLUDED.total_forecast,
+                        updated_at            = EXCLUDED.updated_at
                 `);
             }
         } catch (err) {

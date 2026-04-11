@@ -4,6 +4,16 @@
  * and returns an array of `horizon` projected values (also oldest → newest).
  */
 
+/** Helper to calculate Mean Absolute Error (MAE) */
+function computeMAE(actual: number[], fitted: number[]): number {
+    if (actual.length === 0) return 0;
+    let sumError = 0;
+    for (let i = 0; i < actual.length; i++) {
+        sumError += Math.abs((actual[i] ?? 0) - (fitted[i] ?? 0));
+    }
+    return sumError / actual.length;
+}
+
 // ─── Linear Regression ────────────────────────────────────────────────────────
 
 /** Fit OLS line to historical data. xs are implicit 1-indexed integers. */
@@ -12,7 +22,6 @@ export function linearRegression(ys: number[]): { slope: number; intercept: numb
     if (n === 0) return { slope: 0, intercept: 0 };
     if (n === 1) return { slope: 0, intercept: ys[0]! };
 
-    // Closed-form OLS using arithmetic-sum identities for xs = 1..n
     const sumX  = (n * (n + 1)) / 2;
     const sumX2 = (n * (n + 1) * (2 * n + 1)) / 6;
     const sumY  = ys.reduce((a, b) => a + b, 0);
@@ -26,76 +35,77 @@ export function linearRegression(ys: number[]): { slope: number; intercept: numb
     return { slope, intercept };
 }
 
-function runLinearRegression(series: number[], horizon: number): number[] {
+function runLinearRegression(series: number[], horizon: number): { forecasted: number[]; mae: number } {
     const n = series.length;
     const { slope, intercept } = linearRegression(series);
-    return Array.from({ length: horizon }, (_, i) =>
+    
+    const fitted = series.map((_, i) => Math.max(0, intercept + slope * (i + 1)));
+    const mae = computeMAE(series, fitted);
+    
+    const forecasted = Array.from({ length: horizon }, (_, i) =>
         Math.max(0, intercept + slope * (n + i + 1)),
     );
+    return { forecasted, mae };
 }
 
 // ─── Simple Moving Average ────────────────────────────────────────────────────
 
-function runSMA(series: number[], horizon: number, window = 3): number[] {
+function runSMA(series: number[], horizon: number, window = 3): { forecasted: number[]; mae: number } {
     const slice = series.slice(-window);
     const avg   = slice.length > 0 ? slice.reduce((a, b) => a + b, 0) / slice.length : 0;
-    return Array.from({ length: horizon }, () => avg);
+    
+    // For MAE, we compare historical points to the final avg (simulating standard fit)
+    const mae = computeMAE(series, series.map(() => avg));
+    
+    return { forecasted: Array.from({ length: horizon }, () => avg), mae };
 }
 
 // ─── Weighted Moving Average ──────────────────────────────────────────────────
 
-/**
- * Linear WMA: Latest data gets weight = N, oldest gets weight = 1.
- * WMA = sum(value[i] * (i+1)) / sum(1..N)
- */
-function runWMA(series: number[], horizon: number): number[] {
+function runWMA(series: number[], horizon: number): { forecasted: number[]; mae: number } {
     const n = series.length;
-    if (n === 0) return Array(horizon).fill(0);
-    if (n === 1) return Array(horizon).fill(series[0]);
+    if (n === 0) return { forecasted: Array(horizon).fill(0), mae: 0 };
+    if (n === 1) return { forecasted: Array(horizon).fill(series[0]), mae: 0 };
 
     const weightSum = (n * (n + 1)) / 2;
     const weightedSum = series.reduce((acc, val, i) => acc + val * (i + 1), 0);
     const value = weightedSum / weightSum;
 
-    return Array.from({ length: horizon }, () => value);
+    const mae = computeMAE(series, series.map(() => value));
+    return { forecasted: Array.from({ length: horizon }, () => value), mae };
 }
 
 // ─── Exponential Smoothing (Holt's Double / Holt-Linear) ─────────────────────
 
-/**
- * Double exponential smoothing with level + trend.
- * Source: /Users/mandalika/Documents/PERFORMENCE/template/forecast/engine/holt.ts
- */
 function runHoltLinear(
     series: number[],
     horizon: number,
     alpha = 0.3,
     beta  = 0.1,
-): number[] {
-    if (series.length === 0) return Array(horizon).fill(0);
-    if (series.length === 1) return Array(horizon).fill(series[0]);
+): { forecasted: number[]; mae: number } {
+    if (series.length === 0) return { forecasted: Array(horizon).fill(0), mae: 0 };
+    if (series.length === 1) return { forecasted: Array(horizon).fill(series[0]), mae: 0 };
 
     let level = series[0]!;
     let trend = (series[1] ?? 0) - (series[0] ?? 0);
+    const fitted: number[] = [level];
 
     for (let i = 1; i < series.length; i++) {
         const prevLevel = level;
+        fitted.push(Math.max(0, level + trend));
         level = alpha * (series[i] ?? 0) + (1 - alpha) * (level + trend);
         trend = beta  * (level - prevLevel) + (1 - beta) * trend;
     }
 
-    return Array.from({ length: horizon }, (_, i) =>
+    const mae = computeMAE(series, fitted);
+    const forecasted = Array.from({ length: horizon }, (_, i) =>
         Math.max(0, level + (i + 1) * trend),
     );
+    return { forecasted, mae };
 }
 
 // ─── Holt-Winters Additive ────────────────────────────────────────────────────
 
-/**
- * Triple exponential smoothing with level + trend + additive seasonality.
- * Requires series.length >= seasonLength (default 12).
- * Source: /Users/mandalika/Documents/PERFORMENCE/template/forecast/engine/holt.ts
- */
 function runHoltWintersAdditive(
     series: number[],
     horizon: number,
@@ -103,38 +113,35 @@ function runHoltWintersAdditive(
     alpha = 0.2,
     beta  = 0.1,
     gamma = 0.1,
-): number[] {
+): { forecasted: number[]; mae: number } {
     if (series.length < seasonLength) {
-        // Not enough data for a full seasonal cycle — fallback to Holt-Linear
         return runHoltLinear(series, horizon, alpha, beta);
     }
 
-    // Initialise level
     let l: number = series[0]!;
-
-    // Initialise trend: mean of per-period changes across first season
     let t = 0;
     for (let i = 0; i < seasonLength; i++) {
         t += (Number(series[i + seasonLength] ?? series[i]) - Number(series[i])) / seasonLength;
     }
 
-    // Initialise seasonal components
     const s: number[] = series.slice(0, seasonLength).map((v) => Number(v) - l);
+    const fitted: number[] = [];
 
-    // Smoothing update loop
     for (let i = 0; i < series.length; i++) {
         const idx       = i % seasonLength;
+        fitted.push(Math.max(0, l + t + s[idx]!));
         const prevLevel = l;
         l = alpha * (Number(series[i]) - s[idx]!) + (1 - alpha) * (l + t);
         t = beta  * (l - prevLevel) + (1 - beta) * t;
         s[idx] = gamma * (Number(series[i]) - l) + (1 - gamma) * s[idx]!;
     }
 
-    // Project horizon
-    return Array.from({ length: horizon }, (_, i) => {
+    const mae = computeMAE(series, fitted);
+    const forecasted = Array.from({ length: horizon }, (_, i) => {
         const idx = (series.length + i) % seasonLength;
         return Math.max(0, l + (i + 1) * t + s[idx]!);
     });
+    return { forecasted, mae };
 }
 
 // ─── Dispatcher ───────────────────────────────────────────────────────────────
@@ -149,56 +156,51 @@ export type ForecastModelKey =
     | "ENSEMBLE"
     | "AUTO";
 
-/**
- * Route a forecast request to the matching engine.
- * Returns an array of `horizon` projected values (non-negative).
- *
- * AUTO picks the richest model supported by the available data:
- *   ≥ 12 points → HOLT_WINTERS
- *   ≥  3 points → EXPONENTIAL_SMOOTHING
- *   otherwise   → LINEAR_REGRESSION
- *
- * ARIMA and ENSEMBLE are not yet implemented; they fall back to LINEAR_REGRESSION.
- */
 export function runForecastEngine(
     model: string,
     history: number[],
     horizon: number,
-): { forecasted: number[]; modelActuallyUsed: ForecastModelKey } {
+): { forecasted: number[]; modelActuallyUsed: ForecastModelKey; mae: number } {
     switch (model as ForecastModelKey) {
-        case "SIMPLE_MOVING_AVERAGE":
-            return { forecasted: runSMA(history, horizon), modelActuallyUsed: "SIMPLE_MOVING_AVERAGE" };
-
-        case "WEIGHTED_MOVING_AVERAGE":
-            return { forecasted: runWMA(history, horizon), modelActuallyUsed: "WEIGHTED_MOVING_AVERAGE" };
-
-        case "EXPONENTIAL_SMOOTHING":
-            return { forecasted: runHoltLinear(history, horizon), modelActuallyUsed: "EXPONENTIAL_SMOOTHING" };
-
-        case "HOLT_WINTERS":
-            // Falls back internally to HoltLinear if data < 12
-            return { forecasted: runHoltWintersAdditive(history, horizon), modelActuallyUsed: "HOLT_WINTERS" };
-
+        case "SIMPLE_MOVING_AVERAGE": {
+            const res = runSMA(history, horizon);
+            return { ...res, modelActuallyUsed: "SIMPLE_MOVING_AVERAGE" };
+        }
+        case "WEIGHTED_MOVING_AVERAGE": {
+            const res = runWMA(history, horizon);
+            return { ...res, modelActuallyUsed: "WEIGHTED_MOVING_AVERAGE" };
+        }
+        case "EXPONENTIAL_SMOOTHING": {
+            const res = runHoltLinear(history, horizon);
+            return { ...res, modelActuallyUsed: "EXPONENTIAL_SMOOTHING" };
+        }
+        case "HOLT_WINTERS": {
+            const res = runHoltWintersAdditive(history, horizon);
+            return { ...res, modelActuallyUsed: "HOLT_WINTERS" };
+        }
         case "AUTO": {
             const nonZeroCount = history.filter((v) => v > 0).length;
-            // 1. Seasonal if we have a full year
-            if (nonZeroCount >= 12)
-                return { forecasted: runHoltWintersAdditive(history, horizon), modelActuallyUsed: "HOLT_WINTERS" };
-            // 2. Trend smoothing if we have 6+ months
-            if (nonZeroCount >= 6)
-                return { forecasted: runHoltLinear(history, horizon), modelActuallyUsed: "EXPONENTIAL_SMOOTHING" };
-            // 3. WMA for short history (3-5 months) - more stable than Linear Reg
-            if (nonZeroCount >= 3)
-                return { forecasted: runWMA(history, horizon), modelActuallyUsed: "WEIGHTED_MOVING_AVERAGE" };
-            // 4. Default fallback
-            return { forecasted: runLinearRegression(history, horizon), modelActuallyUsed: "LINEAR_REGRESSION" };
+            if (nonZeroCount >= 12) {
+                const res = runHoltWintersAdditive(history, horizon);
+                return { ...res, modelActuallyUsed: "HOLT_WINTERS" };
+            }
+            if (nonZeroCount >= 6) {
+                const res = runHoltLinear(history, horizon);
+                return { ...res, modelActuallyUsed: "EXPONENTIAL_SMOOTHING" };
+            }
+            if (nonZeroCount >= 3) {
+                const res = runWMA(history, horizon);
+                return { ...res, modelActuallyUsed: "WEIGHTED_MOVING_AVERAGE" };
+            }
+            const res = runLinearRegression(history, horizon);
+            return { ...res, modelActuallyUsed: "LINEAR_REGRESSION" };
         }
-
         case "ARIMA":
         case "ENSEMBLE":
-        // Not yet implemented — fall through to default
         case "LINEAR_REGRESSION":
-        default:
-            return { forecasted: runLinearRegression(history, horizon), modelActuallyUsed: "LINEAR_REGRESSION" };
+        default: {
+            const res = runLinearRegression(history, horizon);
+            return { ...res, modelActuallyUsed: "LINEAR_REGRESSION" };
+        }
     }
 }
