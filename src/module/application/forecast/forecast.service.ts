@@ -1,5 +1,5 @@
 import prisma from "../../../config/prisma.js";
-import { Prisma, $Enums } from "../../../generated/prisma/client.js";
+import { Prisma } from "../../../generated/prisma/client.js";
 import { ApiError } from "../../../lib/errors/api.error.js";
 import { GetPagination } from "../../../lib/utils/pagination.js";
 import {
@@ -96,7 +96,7 @@ export class ForecastService {
         return Buffer.from("\uFEFF" + csv, "utf-8");
     }
 
-    // ── RUN (Forecast Engine) ────────────────────────────────────────────────
+    // ── RUN (Forecast Engine) — Raw SQL for performance ────────────────────────
 
     static async run(body: RunForecastDTO) {
         const {
@@ -187,12 +187,12 @@ export class ForecastService {
             year: number;
             base_forecast: number;
             final_forecast: number;
-            trend: $Enums.Trend;
-            model_used: $Enums.ForecastModel;
+            trend: string;
+            model_used: string;
             system_ratio: number;
             additional_ratio: number;
-            forecast_for: Date;
-            generated_in: Date;
+            forecast_for: string;
+            generated_in: string;
             is_actionable: boolean;
         }[] = [];
 
@@ -231,14 +231,14 @@ export class ForecastService {
                     product_id: product.id,
                     month: m.month,
                     year: m.year,
-                    base_forecast: projected,
-                    final_forecast: projected,
+                    base_forecast: isFinite(projected) ? projected : 0,
+                    final_forecast: isFinite(projected) ? projected : 0,
                     trend: ForecastService.trend(projected, lastActual),
-                    model_used: modelActuallyUsed as $Enums.ForecastModel,
-                    system_ratio: Number(system_ratio.toFixed(4)),
+                    model_used: modelActuallyUsed,
+                    system_ratio: isFinite(system_ratio) ? Number(system_ratio.toFixed(4)) : 0,
                     additional_ratio: 0,
-                    forecast_for: new Date(formatMonthISO(m.year, m.month)),
-                    generated_in: generatedIn,
+                    forecast_for: formatMonthISO(m.year, m.month),
+                    generated_in: generatedIn.toISOString().slice(0, 10),
                     is_actionable: i === 0,
                 });
             }
@@ -252,62 +252,55 @@ export class ForecastService {
             };
         }
 
-        const periodFilter = batch.map((f) => ({
-            product_id: f.product_id,
-            month: f.month,
-            year: f.year,
-        }));
+        const nowIso = new Date().toISOString();
 
-        const existingLatest = await prisma.forecast.findMany({
-            where: { is_latest: true, OR: periodFilter },
-            select: { product_id: true, month: true, year: true, version: true },
-        });
-
-        const versionMap = new Map<string, number>();
-        for (const row of existingLatest) {
-            versionMap.set(`${row.product_id}|${row.month}|${row.year}`, row.version);
-        }
-
-        const now = new Date();
         try {
-            const chunkSize = 4000;
-            await prisma.$transaction(
-                async (tx) => {
-                    await tx.forecast.updateMany({
-                        where: { is_latest: true, OR: periodFilter },
-                        data: { is_latest: false },
-                    });
+            // Build raw SQL VALUES — safe because all values are numbers/enums from engine, not user input
+            const CHUNK_SIZE = 2000;
+            for (let ci = 0; ci < batch.length; ci += CHUNK_SIZE) {
+                const chunk = batch.slice(ci, ci + CHUNK_SIZE);
 
-                    for (let i = 0; i < batch.length; i += chunkSize) {
-                        const chunk = batch.slice(i, i + chunkSize);
-                        await tx.forecast.createMany({
-                            data: chunk.map((f) => ({
-                                product_id: f.product_id,
-                                month: f.month,
-                                year: f.year,
-                                trend: f.trend,
-                                status: $Enums.ForecastStatus.DRAFT,
-                                base_forecast: isFinite(f.base_forecast) ? f.base_forecast : 0,
-                                final_forecast: isFinite(f.final_forecast) ? f.final_forecast : 0,
-                                version: (versionMap.get(`${f.product_id}|${f.month}|${f.year}`) ?? 0) + 1,
-                                is_latest: true,
-                                model_used: f.model_used,
-                                system_ratio: isFinite(f.system_ratio) ? f.system_ratio : 0,
-                                additional_ratio: isFinite(f.additional_ratio) ? f.additional_ratio : 0,
-                                forecast_for: f.forecast_for,
-                                generated_in: f.generated_in,
-                                is_actionable: f.is_actionable,
-                                created_at: now,
-                                updated_at: now,
-                            })),
-                        });
-                    }
-                },
-                { timeout: 60000 },
-            );
+                const valueRows = chunk.map((f) => {
+                    const trend = f.trend;
+                    const model = f.model_used;
+                    return [
+                        `(${f.product_id}, ${f.month}, ${f.year},`,
+                        `'${trend}'::"Trend", 'DRAFT'::"ForecastStatus",`,
+                        `${f.base_forecast}, ${f.final_forecast}, 1, true,`,
+                        `'${model}'::"ForecastModel", ${f.system_ratio}, ${f.additional_ratio},`,
+                        `'${f.forecast_for}'::date, '${f.generated_in}'::date, ${f.is_actionable},`,
+                        `'${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`,
+                    ].join(" ");
+                }).join(",\n");
+
+                await prisma.$executeRawUnsafe(`
+                    INSERT INTO "forecasts" (
+                        product_id, month, year, trend, status,
+                        base_forecast, final_forecast, version, is_latest,
+                        model_used, system_ratio, additional_ratio,
+                        forecast_for, generated_in, is_actionable,
+                        created_at, updated_at
+                    ) VALUES ${valueRows}
+                    ON CONFLICT (product_id, month, year)
+                    DO UPDATE SET
+                        trend            = EXCLUDED.trend,
+                        status           = EXCLUDED.status,
+                        base_forecast    = EXCLUDED.base_forecast,
+                        final_forecast   = EXCLUDED.final_forecast,
+                        version          = "forecasts".version + 1,
+                        is_latest        = true,
+                        model_used       = EXCLUDED.model_used,
+                        system_ratio     = EXCLUDED.system_ratio,
+                        additional_ratio = EXCLUDED.additional_ratio,
+                        forecast_for     = EXCLUDED.forecast_for,
+                        generated_in     = EXCLUDED.generated_in,
+                        is_actionable    = EXCLUDED.is_actionable,
+                        updated_at       = EXCLUDED.updated_at
+                `);
+            }
         } catch (err) {
-            console.error("[Forecast Engine] Bulk Insert Error:", err);
-            throw new ApiError(500, "Gagal melakukan bulk insert forecast.");
+            console.error("[Forecast Engine] Bulk Upsert Error:", err);
+            throw new ApiError(500, "Gagal melakukan bulk upsert forecast.");
         }
 
         return {
@@ -317,7 +310,7 @@ export class ForecastService {
         };
     }
 
-    // ── UPDATE MANUAL (Adopted from api-copy with propagation for others) ─────
+    // ── UPDATE MANUAL — Raw SQL with ON CONFLICT upsert ─────────────────────────
 
     static async updateManual(body: UpdateManualForecastDTO) {
         const { product_id, month, year, final_forecast, ratio, additional_ratio } = body;
@@ -351,69 +344,76 @@ export class ForecastService {
         const resolvedRatio = manualRatio !== undefined ? manualRatio : (existing ? Number(existing.ratio ?? existing.additional_ratio ?? 0) : 0);
         const resolvedFinal = resolvedBase * (1 + resolvedRatio / 100);
         const nowIso = new Date().toISOString();
+        const trendVal = ForecastService.trend(resolvedFinal, resolvedBase);
 
         const shouldPropagate = isOthersProduct && final_forecast !== undefined;
 
         if (!shouldPropagate) {
-            if (!existing) {
-                await prisma.forecast.create({
-                    data: {
-                        product_id, month, year,
-                        base_forecast: resolvedBase,
-                        final_forecast: resolvedFinal,
-                        ratio: resolvedRatio,
-                        additional_ratio: resolvedRatio,
-                        trend: ForecastService.trend(resolvedFinal, resolvedBase),
-                        status: "ADJUSTED",
-                        adjusted_at: new Date(),
-                        forecast_for: new Date(formatMonthISO(year, month)),
-                        generated_in: new Date(),
-                        version: 1, is_latest: true,
-                    },
-                });
-            } else {
-                await prisma.forecast.update({
-                    where: { id: existing.id },
-                    data: {
-                        base_forecast: resolvedBase,
-                        final_forecast: resolvedFinal,
-                        ratio: resolvedRatio,
-                        additional_ratio: resolvedRatio,
-                        trend: ForecastService.trend(resolvedFinal, resolvedBase),
-                        status: "ADJUSTED",
-                        adjusted_at: new Date(),
-                    },
-                });
-            }
+            // Single-period upsert via ON CONFLICT
+            await prisma.$executeRaw`
+                INSERT INTO "forecasts" (
+                    product_id, month, year, trend, status,
+                    base_forecast, final_forecast, ratio, additional_ratio,
+                    version, is_latest, model_used, system_ratio,
+                    forecast_for, generated_in, is_actionable, adjusted_at,
+                    created_at, updated_at
+                ) VALUES (
+                    ${product_id}, ${month}, ${year},
+                    ${trendVal}::"Trend", 'ADJUSTED'::"ForecastStatus",
+                    ${resolvedBase}, ${resolvedFinal}, ${resolvedRatio}, ${resolvedRatio},
+                    1, true, 'LINEAR_REGRESSION'::"ForecastModel", 0,
+                    ${formatMonthISO(year, month)}::date, ${nowIso.slice(0, 10)}::date, false,
+                    ${nowIso}::timestamptz, ${nowIso}::timestamptz, ${nowIso}::timestamptz
+                )
+                ON CONFLICT (product_id, month, year)
+                DO UPDATE SET
+                    base_forecast    = ${resolvedBase},
+                    final_forecast   = ${resolvedFinal},
+                    ratio            = ${resolvedRatio},
+                    additional_ratio = ${resolvedRatio},
+                    trend            = ${trendVal}::"Trend",
+                    status           = 'ADJUSTED'::"ForecastStatus",
+                    adjusted_at      = ${nowIso}::timestamptz,
+                    updated_at       = ${nowIso}::timestamptz
+            `;
         } else {
+            // Propagate across 12-month horizon for "Others" products
             const horizon = 12;
             const monthsRange = Array.from({ length: horizon }, (_, i) => {
                 const d = new Date(year, month - 1 + i, 1);
                 return { month: d.getMonth() + 1, year: d.getFullYear() };
             });
 
-            await prisma.$transaction(async (tx) => {
-                await tx.$executeRawUnsafe(`
-                    UPDATE "forecasts" SET is_latest = false 
-                    WHERE product_id = ${product_id} AND is_latest = true
-                    AND (year * 12 + month) >= ${year * 12 + month}
-                    AND (year * 12 + month) <= ${monthsRange[monthsRange.length - 1]!.year * 12 + monthsRange[monthsRange.length - 1]!.month}
-                `);
+            const valueRows = monthsRange.map((m) => {
+                const isTarget = m.month === month && m.year === year;
+                const mRatio = isTarget ? resolvedRatio : 0;
+                const mFinal = resolvedBase * (1 + mRatio / 100);
+                return `(${product_id}, ${m.month}, ${m.year}, 'STABLE'::"Trend", 'ADJUSTED'::"ForecastStatus", ` +
+                       `${resolvedBase}, ${mFinal}, ${mRatio}, ${mRatio}, ` +
+                       `1, true, 'LINEAR_REGRESSION'::"ForecastModel", 0, ` +
+                       `'${formatMonthISO(m.year, m.month)}'::date, '${nowIso.slice(0, 10)}'::date, false, ` +
+                       `'${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`;
+            }).join(",\n");
 
-                const values = monthsRange.map((m) => {
-                    const isTarget = m.month === month && m.year === year;
-                    const mRatio = isTarget ? resolvedRatio : 0;
-                    const mFinal = resolvedBase * (1 + mRatio / 100);
-                    return `(${product_id}, ${m.month}, ${m.year}, 'STABLE', 'ADJUSTED', ${resolvedBase}, ${mFinal}, ${mRatio}, ${mRatio}, 1, true, 'LINEAR_REGRESSION', 0, '${formatMonthISO(m.year, m.month)}', '${nowIso.slice(0, 10)}', false, '${nowIso}', '${nowIso}')`;
-                }).join(", ");
-
-                await tx.$executeRawUnsafe(`
-                    INSERT INTO "forecasts" (
-                        product_id, month, year, trend, status, base_forecast, final_forecast, ratio, additional_ratio,
-                        version, is_latest, model_used, system_ratio, forecast_for, generated_in, is_actionable, created_at, updated_at
-                    ) VALUES ${values}
-                `);
-            });
+            await prisma.$executeRawUnsafe(`
+                INSERT INTO "forecasts" (
+                    product_id, month, year, trend, status,
+                    base_forecast, final_forecast, ratio, additional_ratio,
+                    version, is_latest, model_used, system_ratio,
+                    forecast_for, generated_in, is_actionable,
+                    created_at, updated_at
+                ) VALUES ${valueRows}
+                ON CONFLICT (product_id, month, year)
+                DO UPDATE SET
+                    base_forecast    = EXCLUDED.base_forecast,
+                    final_forecast   = EXCLUDED.final_forecast,
+                    ratio            = EXCLUDED.ratio,
+                    additional_ratio = EXCLUDED.additional_ratio,
+                    trend            = EXCLUDED.trend,
+                    status           = EXCLUDED.status,
+                    is_latest        = true,
+                    updated_at       = EXCLUDED.updated_at
+            `);
         }
 
         return { message: "Forecast berhasil diperbarui secara manual." };
