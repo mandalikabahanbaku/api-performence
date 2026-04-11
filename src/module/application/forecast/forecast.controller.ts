@@ -32,6 +32,7 @@ export class ForecastController {
     static async list(c: Context) {
         const query = QueryForecastSchema.parse(c.req.query());
         const result = await ForecastService.get(query);
+        console.log(result)
         return ApiResponse.sendSuccess(c, result, 200);
     }
 

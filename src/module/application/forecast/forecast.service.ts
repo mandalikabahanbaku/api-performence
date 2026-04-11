@@ -139,7 +139,8 @@ export class ForecastService {
 
         const histMonths = 14;
         const histPeriods: { month: number; year: number }[] = [];
-        for (let i = histMonths - 1; i >= 0; i--) {
+        // Fetch up to current month (M) to support "Forecast 1" anchor logic
+        for (let i = histMonths - 1; i >= -1; i--) {
             const d = new Date(Date.UTC(anchorYear, anchorMonth - 1 - i, 1));
             histPeriods.push({ month: d.getUTCMonth() + 1, year: d.getUTCFullYear() });
         }
@@ -235,22 +236,27 @@ export class ForecastService {
 
             const rawHistory = histMap.get(product.id) ?? [];
             const firstNonZero = rawHistory.findIndex((v) => v > 0);
-            const history = firstNonZero >= 0 ? rawHistory.slice(firstNonZero) : rawHistory;
+            
+            // Per requirements: Include M in history if it's "Forecasting 1"
+            // But usually history for statistical engine stops at M-1
+            const engineHistory = firstNonZero >= 0 ? rawHistory.slice(firstNonZero, -1) : [];
 
-            if (history.filter((v) => v > 0).length < MIN_DATA) {
+            // MIN_DATA = 1 to allow processing new products
+            if (rawHistory.filter((v) => v > 0).length < 1) {
                 skippedProducts.push(product.code ?? `ID:${product.id}`);
                 continue;
             }
 
             const { forecasted, modelActuallyUsed, mae: engineMae } = runForecastEngine(
                 model_used,
-                history,
+                engineHistory.length >= 2 ? engineHistory : [0, 0], // Fallback for engine
                 horizon,
             );
 
             const m1Actual = anchorM1Map.get(product.id) ?? 0;
             const m0Actual = anchorM0Map.get(product.id) ?? 0;
-            const lastActual = history[history.length - 1] ?? 0;
+            const lastActual = rawHistory[rawHistory.length - 2] ?? 0; // M-1
+            const currentActual = rawHistory[rawHistory.length - 1] ?? 0; // M
             const firstForecastVal = forecasted[0] ?? 0;
             
             // Per requirement #9: "Forecast 1 maka gunakan Sales Actual M (Bulan ini)"
@@ -586,7 +592,12 @@ export class ForecastService {
                         SELECT ss.additional_ratio, ss.safety_stock_ratio, ss.mean_absolute_error, ss.z_value_used,
                                ss.month, ss.year, ss.created_at, ss.avg_forecast, ss.total_forecast, ss.horizon, ss.safety_stock_quantity
                         FROM "safety_stock" ss
-                        WHERE ss.product_id = p.id AND ss.month = ${startMonth} AND ss.year = ${startYear}
+                        WHERE ss.product_id = p.id 
+                        AND (
+                            (ss.month = ${startMonth} AND ss.year = ${startYear}) OR 
+                            (ss.month = ${sysMonth} AND ss.year = ${sysYear})
+                        )
+                        ORDER BY (ss.year * 12 + ss.month) DESC LIMIT 1
                     ) ss
                 ) AS "safety_stock_data"
 
@@ -603,8 +614,6 @@ export class ForecastService {
             WHERE p.status NOT IN ('DELETE', 'PENDING', 'BLOCK') AND p.deleted_at IS NULL
             AND (${isOthers ? Prisma.sql`pt.slug IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag')` : Prisma.sql`pt.slug NOT IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag') OR pt.slug IS NULL`})
             ${searchRaw ? Prisma.sql`AND (p.name ILIKE ${searchRaw} OR p.code ILIKE ${searchRaw})` : Prisma.empty}
-            ${query.type_id ? Prisma.sql`AND p.type_id = ${query.type_id}` : Prisma.empty}
-            ${query.size_id ? Prisma.sql`AND p.size_id = ${query.size_id}` : Prisma.empty}
             ORDER BY sys_m0_base_forecast DESC, m1_base_forecast DESC, m1_final_forecast DESC, group_sort_priority DESC, p.name ASC, 
                      CASE WHEN pt.name ILIKE '%EDP%' OR pt.name ILIKE '%Parfum%' OR pt.name ILIKE '%Perfume%' THEN 1 WHEN pt.name ILIKE '%Atomizer%' THEN 2 ELSE 3 END ASC,
                      ps.size DESC NULLS LAST, p.id ASC
@@ -641,6 +650,10 @@ export class ForecastService {
             });
 
             const totalForecast = monthly_data.reduce((sum, m) => sum + m.final_forecast, 0);
+            const anchorM1Value = actualSalesMap.get(`${p.id}|${anchorRefDate.getUTCMonth() + 1}|${anchorRefDate.getUTCFullYear()}`) ?? null;
+            const anchorM0Value = actualSalesMap.get(`${p.id}|${sysMonth}|${sysYear}`) ?? null;
+            const resolvedAnchorSales = anchorM1Value !== null ? anchorM1Value : anchorM0Value;
+
             return {
                 product_id: p.id, product_code: p.code, product_name: p.name, product_type: p.product_type_name ?? "",
                 product_size: `${p.size ?? ""} ${p.unit_name ?? ""}`.trim(), z_value: Number(p.z_value ?? 1.65),
@@ -649,8 +662,8 @@ export class ForecastService {
                 current_stock: Number(p.current_stock ?? 0), 
                 need_produce: Math.max(0, (monthly_data[0]?.final_forecast ?? 0) - Number(p.current_stock ?? 0)),
                 total_forecast: totalForecast, add_ss_ratio: addSsRatio,
-                anchor_actual_sales: actualSalesMap.get(`${p.id}|${anchorRefDate.getUTCMonth() + 1}|${anchorRefDate.getUTCFullYear()}`) ?? null,
-                anchor_period: `${anchorRefDate.getUTCMonth() + 1}/${anchorRefDate.getUTCFullYear()}`,
+                anchor_actual_sales: resolvedAnchorSales,
+                anchor_period: anchorM1Value !== null ? `${anchorRefDate.getUTCMonth() + 1}/${anchorRefDate.getUTCFullYear()}` : `${sysMonth}/${sysYear}`,
                 safety_stock: ssRaw ? Number(ssRaw.safety_stock_quantity ?? 0) : 0,
                 total_demand: totalForecast + (ssRaw ? Number(ssRaw.safety_stock_quantity ?? 0) : 0),
                 monthly_data,
