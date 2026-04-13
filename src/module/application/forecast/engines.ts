@@ -4,14 +4,17 @@
  * and returns an array of `horizon` projected values (also oldest → newest).
  */
 
-/** Helper to calculate Mean Absolute Error (MAE) */
-function computeMAE(actual: number[], fitted: number[]): number {
-    if (actual.length === 0) return 0;
+/** Helper to calculate Mean Absolute Error (MAE) and return individual errors */
+function computeMAE(actual: number[], fitted: number[]): { mae: number, errors: number[] } {
+    if (actual.length === 0) return { mae: 0, errors: [] };
+    const errors: number[] = [];
     let sumError = 0;
     for (let i = 0; i < actual.length; i++) {
-        sumError += Math.abs((actual[i] ?? 0) - (fitted[i] ?? 0));
+        const err = Math.abs((actual[i] ?? 0) - (fitted[i] ?? 0));
+        errors.push(err);
+        sumError += err;
     }
-    return sumError / actual.length;
+    return { mae: sumError / actual.length, errors };
 }
 
 // ─── Linear Regression ────────────────────────────────────────────────────────
@@ -35,45 +38,44 @@ export function linearRegression(ys: number[]): { slope: number; intercept: numb
     return { slope, intercept };
 }
 
-function runLinearRegression(series: number[], horizon: number): { forecasted: number[]; mae: number } {
+function runLinearRegression(series: number[], horizon: number): { forecasted: number[]; mae: number; errors: number[] } {
     const n = series.length;
     const { slope, intercept } = linearRegression(series);
     
     const fitted = series.map((_, i) => Math.max(0, intercept + slope * (i + 1)));
-    const mae = computeMAE(series, fitted);
+    const { mae, errors } = computeMAE(series, fitted);
     
     const forecasted = Array.from({ length: horizon }, (_, i) =>
         Math.max(0, intercept + slope * (n + i + 1)),
     );
-    return { forecasted, mae };
+    return { forecasted, mae, errors };
 }
 
 // ─── Simple Moving Average ────────────────────────────────────────────────────
 
-function runSMA(series: number[], horizon: number, window = 3): { forecasted: number[]; mae: number } {
-    if (series.length === 0) return { forecasted: Array(horizon).fill(0), mae: 0 };
+function runSMA(series: number[], horizon: number, window = 3): { forecasted: number[]; mae: number; errors: number[] } {
+    if (series.length === 0) return { forecasted: Array(horizon).fill(0), mae: 0, errors: [] };
     const slice = series.slice(-window);
     const avg   = slice.length > 0 ? slice.reduce((a, b) => a + b, 0) / slice.length : 0;
     
-    // MAE: Average deviation of history from this constant avg
-    const mae = computeMAE(series, series.map(() => avg));
+    const { mae, errors } = computeMAE(series, series.map(() => avg));
     
-    return { forecasted: Array.from({ length: horizon }, () => avg), mae };
+    return { forecasted: Array.from({ length: horizon }, () => avg), mae, errors };
 }
 
 // ─── Weighted Moving Average ──────────────────────────────────────────────────
 
-function runWMA(series: number[], horizon: number): { forecasted: number[]; mae: number } {
+function runWMA(series: number[], horizon: number): { forecasted: number[]; mae: number; errors: number[] } {
     const n = series.length;
-    if (n === 0) return { forecasted: Array(horizon).fill(0), mae: 0 };
-    if (n === 1) return { forecasted: Array(horizon).fill(series[0]), mae: 0 };
+    if (n === 0) return { forecasted: Array(horizon).fill(0), mae: 0, errors: [] };
+    if (n === 1) return { forecasted: Array(horizon).fill(series[0]!), mae: 0, errors: [0] };
 
     const weightSum = (n * (n + 1)) / 2;
     const weightedSum = series.reduce((acc, val, i) => acc + val * (i + 1), 0);
     const value = weightedSum / weightSum;
 
-    const mae = computeMAE(series, series.map(() => value));
-    return { forecasted: Array.from({ length: horizon }, () => value), mae };
+    const { mae, errors } = computeMAE(series, series.map(() => value));
+    return { forecasted: Array.from({ length: horizon }, () => value), mae, errors };
 }
 
 // ─── Exponential Smoothing (Holt's Double / Holt-Linear) ─────────────────────
@@ -83,9 +85,9 @@ function runHoltLinear(
     horizon: number,
     alpha = 0.3,
     beta  = 0.1,
-): { forecasted: number[]; mae: number } {
-    if (series.length === 0) return { forecasted: Array(horizon).fill(0), mae: 0 };
-    if (series.length === 1) return { forecasted: Array(horizon).fill(series[0]), mae: 0 };
+): { forecasted: number[]; mae: number; errors: number[] } {
+    if (series.length === 0) return { forecasted: Array(horizon).fill(0), mae: 0, errors: [] };
+    if (series.length === 1) return { forecasted: Array(horizon).fill(series[0]!), mae: 0, errors: [0] };
 
     let level = series[0]!;
     let trend = series.length > 1 ? (series[1] ?? 0) - (series[0] ?? 0) : 0;
@@ -98,11 +100,11 @@ function runHoltLinear(
         trend = beta  * (level - prevLevel) + (1 - beta) * trend;
     }
 
-    const mae = computeMAE(series, fitted);
+    const { mae, errors } = computeMAE(series, fitted);
     const forecasted = Array.from({ length: horizon }, (_, i) =>
         Math.max(0, level + (i + 1) * trend),
     );
-    return { forecasted, mae };
+    return { forecasted, mae, errors };
 }
 
 // ─── Holt-Winters Additive ────────────────────────────────────────────────────
@@ -114,7 +116,7 @@ function runHoltWintersAdditive(
     alpha = 0.2,
     beta  = 0.1,
     gamma = 0.1,
-): { forecasted: number[]; mae: number } {
+): { forecasted: number[]; mae: number; errors: number[] } {
     if (series.length < seasonLength) {
         return runHoltLinear(series, horizon, alpha, beta);
     }
@@ -139,12 +141,12 @@ function runHoltWintersAdditive(
         s[idx] = gamma * (Number(series[i]) - l) + (1 - gamma) * s[idx]!;
     }
 
-    const mae = computeMAE(series, fitted);
+    const { mae, errors } = computeMAE(series, fitted);
     const forecasted = Array.from({ length: horizon }, (_, i) => {
         const idx = (series.length + i) % seasonLength;
         return Math.max(0, l + (i + 1) * t + s[idx]!);
     });
-    return { forecasted, mae };
+    return { forecasted, mae, errors };
 }
 
 // ─── Dispatcher ───────────────────────────────────────────────────────────────
@@ -163,7 +165,7 @@ export function runForecastEngine(
     model: string,
     history: number[],
     horizon: number,
-): { forecasted: number[]; modelActuallyUsed: ForecastModelKey; mae: number } {
+): { forecasted: number[]; modelActuallyUsed: ForecastModelKey; mae: number; errors: number[] } {
     switch (model as ForecastModelKey) {
         case "SIMPLE_MOVING_AVERAGE": {
             const res = runSMA(history, horizon);

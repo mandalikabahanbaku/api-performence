@@ -157,14 +157,6 @@ export class RecomendationV2Service {
         const fcStart = fcStartY * 12 + fcStartM;
         const fcEnd = fcEndY * 12 + fcEndM;
 
-        // Fixed 4-month range for Safety Stock (M+0..M+3), independent of horizon
-        const FIXED_SS_MONTHS = 4;
-        let ssEndM = currentMonth + FIXED_SS_MONTHS - 1;
-        let ssEndY = currentYear;
-        while (ssEndM > 12) { ssEndM -= 12; ssEndY += 1; }
-        const ssStart = currentYear * 12 + currentMonth;
-        const ssEnd = ssEndY * 12 + ssEndM;
-
         // Main Query with calculation and sorting
         const rows = await prisma.$queryRaw<any[]>`
             WITH 
@@ -192,39 +184,38 @@ export class RecomendationV2Service {
                       ${searchFilter}
                 ),
 
-                -- Pre-calculate product-level safety stock using FIXED 4-month average
-                prod_stats AS (
-                    SELECT 
-                        f.product_id,
-                        SUM(f.final_forecast) as total_forecast_horizon,
-                        p.safety_percentage
-                    FROM "forecasts" f
-                    JOIN "products" p ON p.id = f.product_id
-                    WHERE (f.year * 12 + f.month) >= ${ssStart}
-                      AND (f.year * 12 + f.month) <= ${ssEnd}
-                      AND EXISTS (
-                          SELECT 1 FROM "recipes" rec 
-                          WHERE rec.product_id = f.product_id 
-                          AND rec.is_active = true
-                          AND EXISTS (SELECT 1 FROM filtered_materials fm WHERE fm.id = rec.raw_mat_id)
-                      )
-                    GROUP BY f.product_id, p.safety_percentage
-                ),
                 prod_dynamic_ss AS (
-                    SELECT 
-                        product_id,
-                        ROUND(total_forecast_horizon / ${FIXED_SS_MONTHS}::numeric * safety_percentage) as dynamic_ss_qty
-                    FROM prod_stats
+                    SELECT
+                        p.id AS product_id,
+                        CASE WHEN ss.avg_forecast > 0
+                            THEN ss.avg_forecast * (COALESCE(ss.safety_stock_ratio, 0) + COALESCE(ss.additional_ratio, 0)) / 100.0
+                            ELSE COALESCE(ss.safety_stock_quantity, 0)
+                        END AS dynamic_ss_qty
+                    FROM "products" p
+                    LEFT JOIN LATERAL (
+                        SELECT safety_stock_quantity, additional_ratio, safety_stock_ratio, avg_forecast
+                        FROM "safety_stock"
+                        WHERE product_id = p.id
+                        ORDER BY (year * 12 + month) DESC LIMIT 1
+                    ) ss ON true
+                    WHERE EXISTS (
+                        SELECT 1 FROM "recipes" rec
+                        WHERE rec.product_id = p.id AND rec.is_active = true
+                          AND EXISTS (SELECT 1 FROM filtered_materials fm WHERE fm.id = rec.raw_mat_id)
+                    )
                 ),
                 rm_forecast_agg AS (
                     SELECT
                         fm.id AS raw_mat_id,
-                        COALESCE(SUM(FLOOR(f.final_forecast * rec.quantity * 
-                            CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                        COALESCE(SUM(FLOOR(
+                            CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
+                            THEN GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0))
+                            ELSE f.final_forecast END
+                            * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
                         ), 0) AS total_forecast_needed,
                         COALESCE(SUM(
-                            CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear} 
-                            THEN FLOOR(f.final_forecast * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                            CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
+                            THEN FLOOR(GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0)) * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
                             ELSE 0 END
                         ), 0) AS m1_forecast_needed
                     FROM filtered_materials fm
@@ -232,6 +223,12 @@ export class RecomendationV2Service {
                     JOIN "forecasts" f ON f.product_id = rec.product_id
                     JOIN "products" p ON p.id = f.product_id
                     LEFT JOIN "product_size" ps ON ps.id = p.size_id
+                    LEFT JOIN (
+                        SELECT product_id, SUM(quantity) as total_qty
+                        FROM "product_inventories"
+                        WHERE month = ${fgInvMonth} AND year = ${fgInvYear}
+                        GROUP BY product_id
+                    ) pi_fg ON pi_fg.product_id = p.id
                     WHERE (f.year * 12 + f.month) >= ${fcStart}
                       AND (f.year * 12 + f.month) <= ${fcEnd}
                     GROUP BY fm.id
@@ -391,13 +388,22 @@ export class RecomendationV2Service {
                              )
                         ), '[]'::json)
                         FROM (
-                            SELECT f.month, f.year, SUM(FLOOR(f.final_forecast * rec.quantity * 
-                                CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                            SELECT f.month, f.year, SUM(FLOOR(
+                                CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
+                                THEN GREATEST(0, f.final_forecast - COALESCE(pi_fg2.total_qty, 0))
+                                ELSE f.final_forecast END
+                                * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
                             ) as total_needed
                             FROM "forecasts" f
                             JOIN "recipes" rec ON rec.product_id = f.product_id AND rec.is_active = true
                             JOIN "products" p ON p.id = f.product_id
                             LEFT JOIN "product_size" ps ON ps.id = p.size_id
+                            LEFT JOIN (
+                                SELECT product_id, SUM(quantity) as total_qty
+                                FROM "product_inventories"
+                                WHERE month = ${fgInvMonth} AND year = ${fgInvYear}
+                                GROUP BY product_id
+                            ) pi_fg2 ON pi_fg2.product_id = p.id
                             WHERE rec.raw_mat_id = fm.id
                               AND (f.year * 12 + f.month) >= ${fcStartY * 12 + fcStartM}
                               AND (f.year * 12 + f.month) <= ${fcEndY * 12 + fcEndM}

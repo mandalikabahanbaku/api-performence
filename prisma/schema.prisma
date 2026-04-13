@@ -388,6 +388,7 @@ model Forecast {
   valid_from             DateTime?           @db.Date
   additional_ratio       Decimal?            @db.Decimal(5, 2)
   system_ratio           Decimal?            @db.Decimal(5, 2)
+  need_produce           Decimal?            @default(0) @db.Decimal(18, 2)
   // Legacy: percentage-based fields (retained for backward compat, not used by LR engine)
   forecast_percentage_id Int?
   ratio                  Decimal?            @db.Decimal(5, 2)
@@ -420,6 +421,8 @@ model SafetyStock {
   avg_forecast          Decimal? @db.Decimal(18, 2)
   horizon               Int?
   total_forecast        Decimal? @db.Decimal(18, 2)
+  need_produce          Decimal? @default(0) @db.Decimal(18, 2)
+  absolute_error        Json?
   product               Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
 
   @@unique([product_id, month, year])

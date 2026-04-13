@@ -14,22 +14,19 @@ export class BOMService {
         const { page = 1, take = 25, search, forecast_months = 3 } = query;
         const { skip, take: limit } = GetPagination(page, take);
 
-        // 1. Identify Month Ranges
         const now = new Date();
-        const currentYear = now.getUTCFullYear();
-        const currentMonth = now.getUTCMonth() + 1;
+        const anchorMonth = query.start_month ?? (now.getUTCMonth() + 1);
+        const anchorYear = query.start_year ?? now.getUTCFullYear();
 
-        // Sales: Last 4 months (excluding current month)
         const salesRange = Array.from({ length: 4 }, (_, i) => {
-            const d = new Date(Date.UTC(currentYear, currentMonth - 2 - i, 1));
+            const d = new Date(Date.UTC(anchorYear, anchorMonth - 2 - i, 1));
             return { month: d.getUTCMonth() + 1, year: d.getUTCFullYear() };
         }).reverse();
 
-        // Forecast: Next n months starting from now (ensure at least 4 for Safety Stock)
         const FIXED_SS_MONTHS = 4;
         const effectiveForecastMonths = Math.max(forecast_months, FIXED_SS_MONTHS);
         const forecastRange = Array.from({ length: effectiveForecastMonths }, (_, i) => {
-            const d = new Date(Date.UTC(currentYear, currentMonth - 1 + i, 1));
+            const d = new Date(Date.UTC(anchorYear, anchorMonth - 1 + i, 1));
             return { month: d.getUTCMonth() + 1, year: d.getUTCFullYear() };
         });
 
@@ -80,25 +77,31 @@ export class BOMService {
                 r.quantity::float8 as recipe_qty,
                 r.use_size_calc,
                 p.id as p_id, p.code as p_code, p.name as p_name, p.gender::text as p_gender,
-                p.safety_percentage::float8 as p_safety_percentage,
                 pt.name as pt_name, ps.size as ps_val, u.name as u_name,
-                rm.id as rm_id, rm.barcode as rm_barcode, rm.name as rm_name, 
+                rm.id as rm_id, rm.barcode as rm_barcode, rm.name as rm_name,
                 urm.name as urm_name,
+                (
+                    SELECT CASE WHEN ss.avg_forecast > 0
+                        THEN ss.avg_forecast * (COALESCE(ss.safety_stock_ratio, 0) + COALESCE(ss.additional_ratio, 0)) / 100.0
+                        ELSE COALESCE(ss.safety_stock_quantity, 0)
+                    END
+                    FROM safety_stock ss
+                    WHERE ss.product_id = p.id
+                    ORDER BY (ss.year * 12 + ss.month) DESC LIMIT 1
+                )::float8 as p_safety_stock_qty,
                 
-                -- Material Total Stock (Aggregated across warehouses)
                 COALESCE((
                     SELECT SUM(rmi.quantity)
                     FROM raw_material_inventories rmi
                     WHERE rmi.raw_material_id = rm.id
-                    AND rmi.month = ${currentMonth} AND rmi.year = ${currentYear}
+                    AND rmi.month = ${anchorMonth} AND rmi.year = ${anchorYear}
                 ), 0)::float8 as rm_current_stock,
 
-                -- Product Total Stock (Aggregated across warehouses)
                 COALESCE((
                     SELECT SUM(pi.quantity)
                     FROM product_inventories pi
                     WHERE pi.product_id = p.id
-                    AND pi.month = ${currentMonth} AND pi.year = ${currentYear}
+                    AND pi.month = ${anchorMonth} AND pi.year = ${anchorYear}
                 ), 0)::float8 as p_current_stock
                 
             FROM recipes r
@@ -168,12 +171,7 @@ export class BOMService {
                     value: salesMap.get(`${r.p_id}-${s.year}-${s.month}`) ?? 0,
                 }));
 
-                // Safety Stock: Always use fixed 4-month average (M+0..M+3), independent of forecast_months
-                const FIXED_SS_MONTHS = 4;
-                const ssForecasts = fscRange.slice(0, FIXED_SS_MONTHS);
-                const totalForecastForSS = ssForecasts.reduce((acc, f) => acc + f.value, 0);
-                const avgForecastForSS = totalForecastForSS / FIXED_SS_MONTHS;
-                const calculatedSS = avgForecastForSS * Number(r.p_safety_percentage || 0);
+                const calculatedSS = Number(r.p_safety_stock_qty ?? 0);
 
                 // Calculate Need Produce for entire horizon
                 let runningStock = Number(r.p_current_stock ?? 0);
@@ -221,14 +219,17 @@ export class BOMService {
                     quantity: r.recipe_qty,
                     uom: r.urm_name ?? "-",
                 },
-                needs_to_buy: itemForecast.map((f: any) => ({
-                    period: f.period,
-                    month: f.month,
-                    year: f.year,
-                    value: r.use_size_calc
-                        ? Math.floor(Math.round(f.value) * pSize * r.recipe_qty)
-                        : Math.floor(Math.round(f.value) * r.recipe_qty),
-                })),
+                needs_to_buy: itemForecast.map((f: any, idx: number) => {
+                    const qty = idx === 0 ? (group.need_produce[0]?.value ?? f.value) : f.value;
+                    return {
+                        period: f.period,
+                        month: f.month,
+                        year: f.year,
+                        value: r.use_size_calc
+                            ? Math.floor(Math.round(qty) * pSize * r.recipe_qty)
+                            : Math.floor(Math.round(qty) * r.recipe_qty),
+                    };
+                }),
                 safety_stock_x_bom: r.use_size_calc
                     ? Math.floor(Math.round(group.safety_stock) * pSize * r.recipe_qty)
                     : Math.floor(Math.round(group.safety_stock) * r.recipe_qty),
@@ -267,12 +268,11 @@ export class BOMService {
         const { forecast_months = 3 } = query || {};
 
         const now = new Date();
-        const currentYear = now.getUTCFullYear();
-        const currentMonth = now.getUTCMonth() + 1;
+        const anchorMonth = query?.start_month ?? (now.getUTCMonth() + 1);
+        const anchorYear = query?.start_year ?? now.getUTCFullYear();
 
-        // Sales Range: Last 4 months (excluding current month)
         const salesRange = Array.from({ length: 4 }, (_, i) => {
-            const d = new Date(Date.UTC(currentYear, currentMonth - 2 - i, 1));
+            const d = new Date(Date.UTC(anchorYear, anchorMonth - 2 - i, 1));
             return { month: d.getUTCMonth() + 1, year: d.getUTCFullYear() };
         }).reverse();
         const salesPeriodVals = salesRange.map((s) => s.year * 12 + s.month);
@@ -288,23 +288,21 @@ export class BOMService {
         });
 
         if (rawMat) {
-            // Fetch Inventory status
             const inventory = await prisma.rawMaterialInventory.aggregate({
                 where: {
                     raw_material_id: rawMat.id,
-                    month: currentMonth,
-                    year: currentYear,
+                    month: anchorMonth,
+                    year: anchorYear,
                 },
                 _sum: { quantity: true },
             });
 
             const currentStock = Number(inventory._sum.quantity || 0);
 
-            // Forecast Range (Next n months, ensure at least 4 for Safety Stock)
             const FIXED_SS_MONTHS_DETAIL = 4;
             const effectiveFcMonths = Math.max(forecast_months, FIXED_SS_MONTHS_DETAIL);
             const forecastRange = Array.from({ length: effectiveFcMonths }, (_, i) => {
-                const d = new Date(Date.UTC(currentYear, currentMonth - 1 + i, 1));
+                const d = new Date(Date.UTC(anchorYear, anchorMonth - 1 + i, 1));
                 return {
                     month: d.getUTCMonth() + 1,
                     year: d.getUTCFullYear(),
@@ -321,7 +319,7 @@ export class BOMService {
                             product_type: true,
                             size: true,
                             product_inventories: {
-                                where: { month: currentMonth, year: currentYear },
+                                where: { month: anchorMonth, year: anchorYear },
                             },
                             forecasts: {
                                 where: {
@@ -338,13 +336,32 @@ export class BOMService {
 
             const productIds = recipes.map((r) => r.product_id);
 
-            // Fetch Forecasts for all products
-            const forecasts = await prisma.forecast.findMany({
-                where: {
-                    product_id: { in: productIds },
-                    OR: forecastRange.map((f) => ({ month: f.month, year: f.year })),
-                },
-            });
+            const [forecasts, productSsData] = await Promise.all([
+                prisma.forecast.findMany({
+                    where: {
+                        product_id: { in: productIds },
+                        OR: forecastRange.map((f) => ({ month: f.month, year: f.year })),
+                    },
+                }),
+                productIds.length > 0
+                    ? prisma.$queryRaw<{ product_id: number; ss_qty: number }[]>(Prisma.sql`
+                        SELECT DISTINCT ON (ss.product_id)
+                            ss.product_id,
+                            CASE WHEN ss.avg_forecast > 0
+                                THEN ss.avg_forecast * (COALESCE(ss.safety_stock_ratio, 0) + COALESCE(ss.additional_ratio, 0)) / 100.0
+                                ELSE COALESCE(ss.safety_stock_quantity, 0)
+                            END as ss_qty
+                        FROM safety_stock ss
+                        WHERE ss.product_id IN (${Prisma.join(productIds)})
+                        ORDER BY ss.product_id, (ss.year * 12 + ss.month) DESC
+                    `)
+                    : Promise.resolve([]),
+            ]);
+
+            const productSsMap = new Map<number, number>();
+            for (const ss of productSsData) {
+                productSsMap.set(Number(ss.product_id), Number(ss.ss_qty ?? 0));
+            }
 
             const forecastMap = new Map<string, number>();
             forecasts.forEach((f) =>
@@ -378,30 +395,23 @@ export class BOMService {
                 const monthly_data: Record<string, number> = {};
                 let productTotal = 0;
 
-                // Consistent FO Logic
                 const pSize = Number(r.products.size?.size) || 0;
+                const productStockForNeedProduce = r.products.product_inventories.reduce(
+                    (sum, pi) => sum + Number(pi.quantity), 0,
+                );
 
-                forecastRange.forEach((p) => {
+                forecastRange.forEach((p, idx) => {
                     const fVal = forecastMap.get(`${r.product_id}-${p.month}-${p.year}`) || 0;
+                    const effectiveQty = idx === 0 ? Math.max(0, fVal - productStockForNeedProduce) : fVal;
                     const req = r.use_size_calc
-                        ? Math.floor(fVal * pSize * Number(r.quantity))
-                        : Math.floor(fVal * Number(r.quantity));
+                        ? Math.floor(effectiveQty * pSize * Number(r.quantity))
+                        : Math.floor(effectiveQty * Number(r.quantity));
                     monthly_data[p.key] = req;
                     productTotal += req;
                 });
 
                 const productForecasts = r.products.forecasts || [];
-                const FIXED_SS_MONTHS = 4;
-                // Safety Stock: Always use fixed 4-month average, independent of forecast_months
-                const ssProductForecasts = productForecasts
-                    .sort((a, b) => (a.year * 12 + a.month) - (b.year * 12 + b.month))
-                    .slice(0, FIXED_SS_MONTHS);
-                const sumProductForecast = ssProductForecasts.reduce(
-                    (sum, f) => sum + Number(f.final_forecast),
-                    0,
-                );
-                const avgProductForecast = sumProductForecast / FIXED_SS_MONTHS;
-                const productSS = Math.round(avgProductForecast * Number(r.products.safety_percentage || 0));
+                const productSS = Math.round(productSsMap.get(r.product_id) ?? 0);
 
                 // Calculate product-specific Need Produce for entire Horizon
                 const productStockDetail = r.products.product_inventories.reduce(
@@ -458,7 +468,7 @@ export class BOMService {
                         ? productSS * pSize * Number(r.quantity) 
                         : productSS * Number(r.quantity)),
                     need_produce: productNeedProduce,
-                    exploded_at: now,
+                    exploded_at: new Date(),
                 };
             });
 
