@@ -687,11 +687,27 @@ export class ForecastService {
         const anchorRefDate = new Date(Date.UTC(startYear, startMonth - 2, 1));
         const actualSales = await prisma.productIssuance.findMany({
             where: { 
-                product_id: { in: productsRaw.map((p) => p.id) }, type: "ALL",
+                product_id: { in: productsRaw.map((p) => p.id) },
                 OR: [...monthsWindow.map((m) => ({ month: m.month, year: m.year })), { month: anchorRefDate.getUTCMonth() + 1, year: anchorRefDate.getUTCFullYear() }]
             },
         });
-        const actualSalesMap = new Map(actualSales.map((s) => [`${s.product_id}|${s.month}|${s.year}`, Number(s.quantity)]));
+        const actualSalesMap = new Map<string, number>();
+        const otherSalesMap = new Map<string, number>();
+
+        actualSales.forEach((s) => {
+            const key = `${s.product_id}|${s.month}|${s.year}`;
+            if (s.type === "ALL") {
+                actualSalesMap.set(key, (actualSalesMap.get(key) || 0) + Number(s.quantity));
+            } else {
+                otherSalesMap.set(key, (otherSalesMap.get(key) || 0) + Number(s.quantity));
+            }
+        });
+
+        for (const [key, val] of otherSalesMap.entries()) {
+            if (!actualSalesMap.has(key) || actualSalesMap.get(key) === 0) {
+                actualSalesMap.set(key, val);
+            }
+        }
 
         const data: ResponseForecastDTO[] = productsRaw.map((p) => {
             const forecasts = typeof p.forecasts_data === "string" ? JSON.parse(p.forecasts_data) : (p.forecasts_data ?? []);

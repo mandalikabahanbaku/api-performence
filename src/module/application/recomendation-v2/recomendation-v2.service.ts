@@ -261,16 +261,22 @@ export class RecomendationV2Service {
                     SELECT
                         fm.id as raw_mat_id,
                         SUM(FLOOR(pi.quantity * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)) as current_month_sales
-                    FROM "product_issuances" pi
+                    FROM (
+                        SELECT 
+                            product_id, year, month,
+                            COALESCE(
+                                NULLIF(SUM(CASE WHEN type = 'ALL' THEN quantity ELSE 0 END), 0),
+                                SUM(CASE WHEN type != 'ALL' THEN quantity ELSE 0 END),
+                                0
+                            ) as quantity
+                        FROM "product_issuances"
+                        WHERE month = ${prevMonth} AND year = ${prevYear}
+                        GROUP BY product_id, year, month
+                    ) pi
                     JOIN "recipes" rec ON rec.product_id = pi.product_id AND rec.is_active = true
                     JOIN filtered_materials fm ON fm.id = rec.raw_mat_id
                     LEFT JOIN "products" p ON p.id = pi.product_id
                     LEFT JOIN "product_size" ps ON ps.id = p.size_id
-                    WHERE pi.month = ${prevMonth} AND pi.year = ${prevYear}
-                      AND (
-                          ( (pi.year * 12 + pi.month) > ${ISSUANCE_THRESHOLD_PERIOD} AND pi.type != 'ALL') OR
-                          ( (pi.year * 12 + pi.month) <= ${ISSUANCE_THRESHOLD_PERIOD} AND pi.type = 'ALL')
-                      )
                     GROUP BY fm.id
                 )
 
@@ -361,8 +367,9 @@ export class RecomendationV2Service {
                                 SELECT 
                                     product_id, year, month,
                                     COALESCE(
-                                        NULLIF(SUM(CASE WHEN (year * 12 + month) > ${ISSUANCE_THRESHOLD_PERIOD} AND type != 'ALL' THEN quantity ELSE 0 END), 0),
-                                        SUM(CASE WHEN (year * 12 + month) <= ${ISSUANCE_THRESHOLD_PERIOD} AND type = 'ALL' THEN quantity ELSE 0 END)
+                                        NULLIF(SUM(CASE WHEN type = 'ALL' THEN quantity ELSE 0 END), 0),
+                                        SUM(CASE WHEN type != 'ALL' THEN quantity ELSE 0 END),
+                                        0
                                     ) as total_month_qty
                                 FROM "product_issuances"
                                 WHERE (year * 12 + month) >= ${slStartY * 12 + slStartM}

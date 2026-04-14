@@ -123,8 +123,9 @@ export class BOMService {
                 SELECT 
                     product_id, year, month,
                     COALESCE(
-                        NULLIF(SUM(CASE WHEN (year * 12 + month) > ${ISSUANCE_THRESHOLD_PERIOD} AND type != 'ALL' THEN quantity ELSE 0 END), 0),
-                        SUM(CASE WHEN (year * 12 + month) <= ${ISSUANCE_THRESHOLD_PERIOD} AND type = 'ALL' THEN quantity ELSE 0 END)
+                        NULLIF(SUM(CASE WHEN type = 'ALL' THEN quantity ELSE 0 END), 0),
+                        SUM(CASE WHEN type != 'ALL' THEN quantity ELSE 0 END),
+                        0
                     ) as quantity
                 FROM product_issuances
                 WHERE product_id IN (${Prisma.join(productIds)})
@@ -376,8 +377,9 @@ export class BOMService {
                 SELECT 
                     product_id, year, month,
                     COALESCE(
-                        NULLIF(SUM(CASE WHEN (year * 12 + month) > ${ISSUANCE_THRESHOLD_PERIOD} AND type != 'ALL' THEN quantity ELSE 0 END), 0),
-                        SUM(CASE WHEN (year * 12 + month) <= ${ISSUANCE_THRESHOLD_PERIOD} AND type = 'ALL' THEN quantity ELSE 0 END)
+                        NULLIF(SUM(CASE WHEN type = 'ALL' THEN quantity ELSE 0 END), 0),
+                        SUM(CASE WHEN type != 'ALL' THEN quantity ELSE 0 END),
+                        0
                     ) as quantity
                 FROM product_issuances
                 WHERE product_id IN (${Prisma.join(productIds)})
