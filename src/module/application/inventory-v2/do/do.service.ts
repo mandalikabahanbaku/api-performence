@@ -456,7 +456,7 @@ export class DOService {
         const sheet = workbook.addWorksheet(`DO ${doRecord.transfer_number}`);
 
         sheet.mergeCells("A1:D1");
-        sheet.getCell("A1").value = "PERFORMENCE ERP - DELIVERY ORDER";
+        sheet.getCell("A1").value = "Performance ERP - DELIVERY ORDER";
         sheet.getCell("A1").font = { bold: true, size: 16 };
         sheet.getCell("A1").alignment = { horizontal: "center" };
 

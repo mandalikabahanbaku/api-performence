@@ -184,7 +184,7 @@ export class GoodsReceiptService {
         const sheet = workbook.addWorksheet(`GR ${gr.gr_number}`);
 
         sheet.mergeCells("A1:D1");
-        sheet.getCell("A1").value = "PERFORMENCE ERP - GOODS RECEIPT";
+        sheet.getCell("A1").value = "Performance ERP - GOODS RECEIPT";
         sheet.getCell("A1").font = { bold: true, size: 16 };
         sheet.getCell("A1").alignment = { horizontal: "center" };
 
