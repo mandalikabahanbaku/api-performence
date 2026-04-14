@@ -636,7 +636,7 @@ export class ForecastService {
                 p.id, p.code, p.name, ps.size AS "size", pt.name AS "product_type_name", u.name AS "unit_name",
                 p.distribution_percentage, p.safety_percentage, COALESCE(pi.quantity, 0)::float8 AS "current_stock",
                 p.z_value,
-                MAX(COALESCE(f_m1.final_forecast, 0)) OVER(PARTITION BY p.name) as group_sort_priority,
+                MAX(GREATEST(COALESCE(f_m1.final_forecast, 0), COALESCE(f_now.base_forecast, 0))) OVER(PARTITION BY reverse(split_part(reverse(p.code), '-', 1))) as group_sort_priority,
                 COALESCE(f_m1.final_forecast, 0) as m1_final_forecast,
                 COALESCE(f_m1.base_forecast, 0) as m1_base_forecast,
                 COALESCE(f_m1.need_produce, 0) as m1_need_produce,
@@ -678,7 +678,7 @@ export class ForecastService {
             WHERE p.status NOT IN ('DELETE', 'PENDING', 'BLOCK') AND p.deleted_at IS NULL
             AND (${isOthers ? Prisma.sql`pt.slug IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag')` : Prisma.sql`pt.slug NOT IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag') OR pt.slug IS NULL`})
             ${searchRaw ? Prisma.sql`AND (p.name ILIKE ${searchRaw} OR p.code ILIKE ${searchRaw})` : Prisma.empty}
-            ORDER BY sys_m0_base_forecast DESC, m1_base_forecast DESC, m1_final_forecast DESC, group_sort_priority DESC, p.name ASC, 
+            ORDER BY group_sort_priority DESC, reverse(split_part(reverse(p.code), '-', 1)) ASC, p.name ASC, sys_m0_base_forecast DESC, m1_base_forecast DESC, m1_final_forecast DESC, 
                      CASE WHEN pt.name ILIKE '%EDP%' OR pt.name ILIKE '%Parfum%' OR pt.name ILIKE '%Perfume%' THEN 1 WHEN pt.name ILIKE '%Atomizer%' THEN 2 ELSE 3 END ASC,
                      ps.size DESC NULLS LAST, p.id ASC
             LIMIT ${limit} OFFSET ${skip}
