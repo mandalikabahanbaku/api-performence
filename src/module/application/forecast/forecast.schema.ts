@@ -146,4 +146,10 @@ export type ResponseForecastDTO = {
         total_demand: number | null;
         last_updated: Date | null;
     } | null;
+    history_3_months: Array<{
+        month: number;
+        year: number;
+        period: string;
+        actual_sales: number;
+    }>;
 };

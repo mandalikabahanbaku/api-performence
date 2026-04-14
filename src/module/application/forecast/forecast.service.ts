@@ -606,6 +606,11 @@ export class ForecastService {
         const sysMonth = sysContext.getMonth() + 1;
         const sysYear = sysContext.getFullYear();
 
+        const history3MonthsWindow = Array.from({ length: 3 }, (_, i) => {
+            const d = new Date(Date.UTC(sysYear, sysMonth - 1 - (i + 1), 1));
+            return { month: d.getUTCMonth() + 1, year: d.getUTCFullYear() };
+        }).reverse(); // M-3, M-2, M-1
+
         const isOthers = query.is_others ?? query.is_display;
         const searchRaw = query.search ? `%${query.search}%` : null;
 
@@ -685,10 +690,16 @@ export class ForecastService {
         `;
 
         const anchorRefDate = new Date(Date.UTC(startYear, startMonth - 2, 1));
+        const actualSalesQueryMonths = [
+            ...monthsWindow.map((m) => ({ month: m.month, year: m.year })),
+            { month: anchorRefDate.getUTCMonth() + 1, year: anchorRefDate.getUTCFullYear() },
+            ...history3MonthsWindow.map(m => ({ month: m.month, year: m.year }))
+        ];
+
         const actualSales = await prisma.productIssuance.findMany({
             where: { 
                 product_id: { in: productsRaw.map((p) => p.id) },
-                OR: [...monthsWindow.map((m) => ({ month: m.month, year: m.year })), { month: anchorRefDate.getUTCMonth() + 1, year: anchorRefDate.getUTCFullYear() }]
+                OR: actualSalesQueryMonths
             },
         });
         const actualSalesMap = new Map<string, number>();
@@ -749,6 +760,16 @@ export class ForecastService {
             const anchorM0Value = actualSalesMap.get(`${p.id}|${sysMonth}|${sysYear}`) ?? null;
             const resolvedAnchorSales = anchorM1Value !== null ? anchorM1Value : anchorM0Value;
 
+            const history_3_months = history3MonthsWindow.map(m => {
+                const sales = actualSalesMap.get(`${p.id}|${m.month}|${m.year}`) ?? 0;
+                return {
+                    month: m.month,
+                    year: m.year,
+                    period: `${m.month}/${m.year}`,
+                    actual_sales: sales
+                };
+            });
+
             return {
                 product_id: p.id, product_code: p.code, product_name: p.name, product_type: p.product_type_name ?? "",
                 product_size: `${p.size ?? ""} ${p.unit_name ?? ""}`.trim(), z_value: Number(p.z_value ?? 1.65),
@@ -762,6 +783,7 @@ export class ForecastService {
                 safety_stock: effectiveSsQty,
                 total_demand: totalForecast + effectiveSsQty,
                 monthly_data,
+                history_3_months,
                 safety_stock_summary: ssRaw ? {
                     safety_stock_quantity: effectiveSsQty,
                     safety_stock_ratio: Math.round(Number(engineSsRatio + addSsRatio)),
