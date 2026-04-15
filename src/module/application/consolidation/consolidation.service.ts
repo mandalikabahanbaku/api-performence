@@ -27,6 +27,11 @@ export class ConsolidationService {
             };
         }
 
+        if (query.selectedIds) {
+            const ids = query.selectedIds.split(",").map(Number);
+            query_condition.id = { in: ids };
+        }
+
         if (search) {
             query_condition.raw_material = {
                 name: {
@@ -102,7 +107,26 @@ export class ConsolidationService {
             created_at: item.created_at,
         }));
 
-        return { data: parsedData, len: total };
+        // Calculate total amount for all matching items (ignoring pagination)
+        const allMatchingItems = await prisma.materialPurchaseDraft.findMany({
+            where: query_condition,
+            select: {
+                quantity: true,
+                raw_material: {
+                    select: {
+                        price: true,
+                    },
+                },
+            },
+        });
+
+        const total_amount = allMatchingItems.reduce((sum, item) => {
+            return (
+                sum + (Number(item.quantity) || 0) * (Number(item.raw_material?.price) || 0)
+            );
+        }, 0);
+
+        return { data: parsedData, len: total, total_amount };
     }
 
     static async summaryBySupplier(query: QueryConsolidationDTO) {
