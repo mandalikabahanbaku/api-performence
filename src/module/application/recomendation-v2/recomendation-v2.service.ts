@@ -91,6 +91,13 @@ export class RecomendationV2Service {
                 OR s.name ILIKE '%' || ${cleanSearch} || '%'
                 OR rmc.name ILIKE '%' || ${cleanSearch} || '%'
                 OR urm.name ILIKE '%' || ${cleanSearch} || '%'
+                OR EXISTS (
+                    SELECT 1 FROM "recipes" r_srch
+                    JOIN "products" p_srch ON p_srch.id = r_srch.product_id
+                    WHERE r_srch.raw_mat_id = rm.id
+                      AND r_srch.is_active = true
+                      AND p_srch.name ILIKE '%' || ${cleanSearch} || '%'
+                )
               )`
             : Prisma.empty;
 
