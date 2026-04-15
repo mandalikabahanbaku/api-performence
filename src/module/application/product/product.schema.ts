@@ -10,7 +10,7 @@ export const RequestProductSchema = z.object({
         .string()
         .min(5, "Nama produk minimal memiliki 5 karakter")
         .max(100, "Nama produk tidak boleh melebihi 100 karakter"),
-    size: z.coerce.number("Ukuran tidak boleh kosong").min(2),
+    size: z.coerce.number("Ukuran tidak boleh kosong"),
     gender: z.enum(GENDER).optional().default("UNISEX"),
     status: z.enum(STATUS).default("PENDING").optional(),
     z_value: z.number().default(1.65),
