@@ -91,13 +91,6 @@ export class RecomendationV2Service {
                 OR s.name ILIKE '%' || ${cleanSearch} || '%'
                 OR rmc.name ILIKE '%' || ${cleanSearch} || '%'
                 OR urm.name ILIKE '%' || ${cleanSearch} || '%'
-                OR EXISTS (
-                    SELECT 1 FROM "recipes" r_srch
-                    JOIN "products" p_srch ON p_srch.id = r_srch.product_id
-                    WHERE r_srch.raw_mat_id = rm.id
-                      AND r_srch.is_active = true
-                      AND p_srch.name ILIKE '%' || ${cleanSearch} || '%'
-                )
               )`
             : Prisma.empty;
 
@@ -116,6 +109,7 @@ export class RecomendationV2Service {
                 JOIN "raw_materials" rm ON rm.id = po.raw_material_id
                 LEFT JOIN "raw_mat_categories" rmc ON rmc.id = rm.raw_mat_categories_id
                 LEFT JOIN "suppliers" s ON s.id = rm.supplier_id
+                LEFT JOIN "unit_raw_materials" urm ON urm.id = rm.unit_id
                 WHERE po.status NOT IN ('RECEIVED', 'CANCELLED')
                   AND ${typeFilter}
                   ${searchFilter}
