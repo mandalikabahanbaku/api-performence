@@ -752,7 +752,7 @@ export class RecomendationV2Service {
     }
 
     static async bulkSaveHorizon(body: RequestBulkSaveHorizonDTO) {
-        const { month, year, horizon, type } = body;
+        const { month, year, horizon, type, ids } = body;
 
         const typeFilter = (() => {
             switch (type) {
@@ -766,6 +766,11 @@ export class RecomendationV2Service {
                     return Prisma.sql`1=1`;
             }
         })();
+        
+        const idsFilter = ids && ids.length > 0
+            ? Prisma.sql`AND rm.id IN (${Prisma.join(ids)})`
+            : Prisma.empty;
+
 
         // Fetch latest inventory periods
         const latestInv = await prisma.rawMaterialInventory.findFirst({
@@ -899,11 +904,9 @@ export class RecomendationV2Service {
                 rm.id AS raw_mat_id,
                 ${month} AS month,
                 ${year} AS year,
-                COALESCE(mro.quantity,
-                    GREATEST(0,
-                        COALESCE(fc.total, 0)
-                        - (COALESCE(inv.total, 0) - COALESCE(ss.total, 0) + COALESCE(po.total, 0))
-                    )
+                GREATEST(0,
+                    COALESCE(fc.total, 0)
+                    - (COALESCE(inv.total, 0) - COALESCE(ss.total, 0) + COALESCE(po.total, 0))
                 ) AS quantity,
                 ${horizon} AS horizon,
                 COALESCE(fc.total, 0) AS total_needed,
@@ -926,6 +929,7 @@ export class RecomendationV2Service {
             LEFT JOIN fg_agg fg ON fg.raw_mat_id = rm.id
             WHERE ${typeFilter}
               AND rm.deleted_at IS NULL
+              ${idsFilter}
               AND EXISTS (
                   SELECT 1 FROM "recipes" r2
                   WHERE r2.raw_mat_id = rm.id AND r2.is_active = true

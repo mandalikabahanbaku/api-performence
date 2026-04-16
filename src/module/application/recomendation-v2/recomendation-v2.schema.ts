@@ -46,6 +46,7 @@ export const RequestBulkSaveHorizonSchema = z.object({
     year: z.coerce.number().min(2000),
     horizon: z.coerce.number().min(1).max(12).default(3),
     type: z.enum(["ffo", "lokal", "impor"]).optional(),
+    ids: z.array(z.coerce.number()).optional(),
 });
 
 export type RequestBulkSaveHorizonDTO = z.infer<typeof RequestBulkSaveHorizonSchema>;
