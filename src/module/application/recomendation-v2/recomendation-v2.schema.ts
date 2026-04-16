@@ -130,3 +130,12 @@ export const RequestDeleteNeedOverrideSchema = z.object({
 });
 
 export type RequestDeleteNeedOverrideDTO = z.infer<typeof RequestDeleteNeedOverrideSchema>;
+
+export const RequestBulkSaveNeedOverrideSchema = z.object({
+    ids: z.array(z.coerce.number()),
+    month: z.coerce.number().min(1).max(12),
+    year: z.coerce.number().min(2000),
+    quantity: z.coerce.number().min(0),
+});
+
+export type RequestBulkSaveNeedOverrideDTO = z.infer<typeof RequestBulkSaveNeedOverrideSchema>;

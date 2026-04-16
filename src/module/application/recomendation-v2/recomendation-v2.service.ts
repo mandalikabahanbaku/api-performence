@@ -8,6 +8,7 @@ import {
     RequestSaveOpenPoDTO,
     RequestUpdateMoqDTO,
     RequestSaveNeedOverrideDTO,
+    RequestBulkSaveNeedOverrideDTO,
 } from "./recomendation-v2.schema.js";
 import { GetPagination } from "../../../lib/utils/pagination.js";
 import { ISSUANCE_THRESHOLD_PERIOD } from "../issuance/issuance.service.js";
@@ -642,6 +643,34 @@ export class RecomendationV2Service {
             },
             update: { quantity },
             create: { raw_material_id, month, year, quantity },
+        });
+    }
+
+    static async bulkSaveNeedOverride(body: RequestBulkSaveNeedOverrideDTO) {
+        const { ids, month, year, quantity } = body;
+
+        return await prisma.$transaction(async (tx) => {
+            const results = [];
+            for (const id of ids) {
+                const res = await tx.rawMaterialNeedOverride.upsert({
+                    where: {
+                        raw_material_id_month_year: {
+                            raw_material_id: id,
+                            month,
+                            year,
+                        },
+                    },
+                    update: { quantity },
+                    create: {
+                        raw_material_id: id,
+                        month,
+                        year,
+                        quantity,
+                    },
+                });
+                results.push(res);
+            }
+            return results;
         });
     }
 
