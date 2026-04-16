@@ -10,6 +10,7 @@ import {
     RequestUpdateMoqSchema,
     RequestSaveNeedOverrideSchema,
     RequestDeleteNeedOverrideSchema,
+    RequestBulkSaveNeedOverrideSchema,
 } from "./recomendation-v2.schema.js";
 
 export class RecomendationV2Controller {
@@ -114,6 +115,13 @@ export class RecomendationV2Controller {
         const body = await c.req.json();
         const validBody = RequestDeleteNeedOverrideSchema.parse(body);
         const result = await RecomendationV2Service.deleteNeedOverride(validBody);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async bulkSaveNeedOverride(c: Context) {
+        const body = await c.req.json();
+        const validBody = RequestBulkSaveNeedOverrideSchema.parse(body);
+        const result = await RecomendationV2Service.bulkSaveNeedOverride(validBody);
         return ApiResponse.sendSuccess(c, result, 200);
     }
 }
