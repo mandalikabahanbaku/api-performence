@@ -309,7 +309,7 @@ describe("RecipeService", () => {
             (prisma.$queryRaw as any).mockResolvedValueOnce(mockExportRows);
 
             const buffer = await RecipeService.export({});
-            const csv = buffer.toString("utf8");
+            const csv = Buffer.from(buffer as ArrayBuffer).toString("utf8");
             const firstLine = csv.split(/\r?\n/)[0];
 
             expect(firstLine).toBe("PRODUCT CODE,MATERIAL CODE,QUANTITY");
@@ -322,7 +322,7 @@ describe("RecipeService", () => {
             (prisma.$queryRaw as any).mockResolvedValueOnce([]);
 
             const buffer = await RecipeService.export({});
-            const csv = buffer.toString("utf8");
+            const csv = Buffer.from(buffer as ArrayBuffer).toString("utf8");
 
             expect(csv.split(/\r?\n/)[0]).toBe("PRODUCT CODE,MATERIAL CODE,QUANTITY");
         });

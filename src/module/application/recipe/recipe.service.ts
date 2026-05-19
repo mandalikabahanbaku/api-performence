@@ -249,7 +249,7 @@ export class RecipeService {
         return data;
     }
 
-    static async export(query: QueryRecipeDTO): Promise<Buffer> {
+    static async export(query: QueryRecipeDTO) {
         const { search } = query;
 
         const conditions: Prisma.Sql[] = [
@@ -299,7 +299,7 @@ export class RecipeService {
             });
         });
 
-        return (await workbook.csv.writeBuffer()) as Buffer;
+        return await workbook.csv.writeBuffer();
     }
 }
 
