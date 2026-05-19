@@ -7,6 +7,7 @@ import RecipeImportRoutes from "./import/import.routes.js";
 export const RecipeRoutes = new Hono();
 RecipeRoutes.route("/import", RecipeImportRoutes);
 
+RecipeRoutes.get("/export", RecipeController.export);
 RecipeRoutes.get("/:id", RecipeController.detail);
 RecipeRoutes.get("/", RecipeController.list);
 RecipeRoutes.post("/", validateBody(RequestRecipeSchema), RecipeController.upsert);

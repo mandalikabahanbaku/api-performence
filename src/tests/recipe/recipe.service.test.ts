@@ -296,4 +296,43 @@ describe("RecipeService", () => {
             expect(result.unit).toBe("");
         });
     });
+
+    // ── EXPORT ────────────────────────────────────────────────────────────────
+
+    describe("export", () => {
+        const mockExportRows = [
+            { product_code: "TSHIRT", material_code: "RM-001", quantity: "2.50" },
+            { product_code: "TSHIRT", material_code: "RM-002", quantity: "0.5" },
+        ];
+
+        it("should return a CSV buffer with import-compatible headers", async () => {
+            (prisma.$queryRaw as any).mockResolvedValueOnce(mockExportRows);
+
+            const buffer = await RecipeService.export({});
+            const csv = buffer.toString("utf8");
+            const firstLine = csv.split(/\r?\n/)[0];
+
+            expect(firstLine).toBe("PRODUCT CODE,MATERIAL CODE,QUANTITY");
+            // Number("2.50") → 2.5; import schema uses z.coerce.number() so trailing zeros don't matter
+            expect(csv).toContain("TSHIRT,RM-001,2.5");
+            expect(csv).toContain("TSHIRT,RM-002,0.5");
+        });
+
+        it("should still emit the header row when there are no recipes", async () => {
+            (prisma.$queryRaw as any).mockResolvedValueOnce([]);
+
+            const buffer = await RecipeService.export({});
+            const csv = buffer.toString("utf8");
+
+            expect(csv.split(/\r?\n/)[0]).toBe("PRODUCT CODE,MATERIAL CODE,QUANTITY");
+        });
+
+        it("should issue exactly one query (no pagination/count round-trips)", async () => {
+            (prisma.$queryRaw as any).mockResolvedValueOnce(mockExportRows);
+
+            await RecipeService.export({ search: "kain" });
+
+            expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+        });
+    });
 });

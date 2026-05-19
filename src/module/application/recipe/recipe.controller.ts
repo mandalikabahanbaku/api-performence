@@ -26,6 +26,21 @@ export class RecipeController {
         return ApiResponse.sendSuccess(c, rest, 200);
     }
 
+    static async export(c: Context) {
+        const { search } = c.req.query();
+
+        const params: QueryRecipeDTO = {
+            search,
+        };
+
+        const buffer = await RecipeService.export(params);
+
+        c.header("Content-Type", "text/csv");
+        c.header("Content-Disposition", "attachment; filename=resep-bom.csv");
+
+        return c.body(buffer as any);
+    }
+
     static async detail(c: Context) {
         const id = c.req.param("id");
         const rest = await RecipeService.detail(Number(id));

@@ -163,6 +163,39 @@ describe("RecipeRoutes", () => {
         });
     });
 
+    // ── EXPORT ───────────────────────────────────────────────────────────────
+
+    describe("GET /api/app/recipes/export", () => {
+        it("should return 200 with CSV content-type and import-compatible header", async () => {
+            (prisma.$queryRaw as any).mockResolvedValueOnce([
+                { product_code: "TSHIRT", material_code: "RM-001", quantity: "2.50" },
+            ]);
+
+            const res = await app.request("/api/app/recipes/export", { method: "GET" });
+            const text = await res.text();
+
+            expect(res.status).toBe(200);
+            expect(res.headers.get("content-type")).toContain("text/csv");
+            expect(res.headers.get("content-disposition")).toContain("resep-bom.csv");
+            // Proves /export is matched before /:id (a misorder would return JSON detail).
+            expect(text.split(/\r?\n/)[0]).toBe("PRODUCT CODE,MATERIAL CODE,QUANTITY");
+            expect(text).toContain("TSHIRT,RM-001,2.5");
+        });
+
+        it("should return 200 when a search filter is supplied", async () => {
+            (prisma.$queryRaw as any).mockResolvedValueOnce([]);
+
+            const res = await app.request("/api/app/recipes/export?search=kain", {
+                method: "GET",
+            });
+            const text = await res.text();
+
+            expect(res.status).toBe(200);
+            expect(res.headers.get("content-type")).toContain("text/csv");
+            expect(text.split(/\r?\n/)[0]).toBe("PRODUCT CODE,MATERIAL CODE,QUANTITY");
+        });
+    });
+
     // ── DETAIL ────────────────────────────────────────────────────────────────
 
     describe("GET /api/app/recipes/:id", () => {

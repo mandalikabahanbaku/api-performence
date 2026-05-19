@@ -1,3 +1,4 @@
+import ExcelJS from "exceljs";
 import prisma from "../../../config/prisma.js";
 import { Prisma } from "../../../generated/prisma/client.js";
 import { ApiError } from "../../../lib/errors/api.error.js";
@@ -247,6 +248,59 @@ export class RecipeService {
 
         return data;
     }
+
+    static async export(query: QueryRecipeDTO): Promise<Buffer> {
+        const { search } = query;
+
+        const conditions: Prisma.Sql[] = [
+            Prisma.sql`rm.deleted_at IS NULL`,
+            Prisma.sql`r.is_active = true`,
+        ];
+
+        if (search) {
+            const pattern = `%${search}%`;
+            conditions.push(Prisma.sql`(
+                p.name  ILIKE ${pattern} OR
+                p.code  ILIKE ${pattern} OR
+                rm.name ILIKE ${pattern}
+            )`);
+        }
+
+        const whereSql = Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}`;
+
+        const rows = await prisma.$queryRaw<RawExportRow[]>(Prisma.sql`
+            SELECT
+                p.code      AS product_code,
+                rm.barcode  AS material_code,
+                r.quantity  AS quantity
+            FROM   recipes r
+            JOIN   products      p  ON p.id  = r.product_id
+            JOIN   raw_materials rm ON rm.id = r.raw_mat_id
+            ${whereSql}
+            ORDER BY p.code ASC, rm.barcode ASC
+        `);
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet("Resep BOM");
+
+        // Headers MUST stay byte-identical to api/.../recipe/import/import.schema.ts
+        // (RecipeImportRowSchema) so an exported file re-imports without header errors.
+        sheet.columns = [
+            { header: "PRODUCT CODE", key: "product_code", width: 20 },
+            { header: "MATERIAL CODE", key: "material_code", width: 20 },
+            { header: "QUANTITY", key: "quantity", width: 15 },
+        ];
+
+        rows.forEach((row) => {
+            sheet.addRow({
+                product_code: row.product_code,
+                material_code: row.material_code,
+                quantity: Number(row.quantity),
+            });
+        });
+
+        return (await workbook.csv.writeBuffer()) as Buffer;
+    }
 }
 
 type RawRecipeRow = {
@@ -290,4 +344,10 @@ type RawDetailRow = {
     version: number | null;
     is_active: boolean | null;
     description: string | null;
+};
+
+type RawExportRow = {
+    product_code: string;
+    material_code: string;
+    quantity: string | number;
 };
