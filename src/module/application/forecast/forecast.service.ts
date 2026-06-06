@@ -751,7 +751,7 @@ export class ForecastService {
             ) pi ON p.id = pi.product_id
             LEFT JOIN "forecasts" f_now ON f_now.product_id = p.id AND f_now.month = ${sysMonth} AND f_now.year = ${sysYear} AND f_now.is_latest = true
             WHERE p.status NOT IN ('DELETE', 'PENDING', 'BLOCK') AND p.deleted_at IS NULL
-            AND (${isOthers ? Prisma.sql`pt.slug IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag')` : Prisma.sql`pt.slug NOT IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag') OR pt.slug IS NULL`})
+            AND (${isOthers ? Prisma.sql`pt.slug IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag', 'kertas-tester')` : Prisma.sql`pt.slug NOT IN ('display', 'kertas', 'botol', 'paper-bag', 'kartu-garansi', 'canvas-bag', 'kertas-tester') OR pt.slug IS NULL`})
             ${searchRaw ? Prisma.sql`AND (p.name ILIKE ${searchRaw} OR p.code ILIKE ${searchRaw})` : Prisma.empty}
             ORDER BY sys_m0_base_forecast DESC, m1_base_forecast DESC, m1_final_forecast DESC, group_sort_priority DESC, p.name ASC, 
                      CASE WHEN pt.name ILIKE '%EDP%' OR pt.name ILIKE '%Parfum%' OR pt.name ILIKE '%Perfume%' THEN 1 WHEN pt.name ILIKE '%Atomizer%' THEN 2 ELSE 3 END ASC,
@@ -1014,9 +1014,15 @@ export class ForecastService {
     private static async checkIsOthersSlug(slug: string | null | undefined) {
         if (!slug) return false;
         const s = slug.toLowerCase();
-        return ["display", "kertas", "botol", "paper-bag", "kartu-garansi", "canvas-bag"].some(
-            (x) => s.includes(x),
-        );
+        return [
+            "display",
+            "kertas",
+            "botol",
+            "paper-bag",
+            "kartu-garansi",
+            "canvas-bag",
+            "kertas-tester",
+        ].some((x) => s.includes(x));
     }
 
     private static resolveHorizonMonths(now: Date, horizon: number) {
