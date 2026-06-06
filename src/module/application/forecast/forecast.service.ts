@@ -34,6 +34,7 @@ export const OTHERS_PRODUCT_FILTER = [
     { product_type: { slug: { contains: "paper-bag", mode: "insensitive" } } },
     { product_type: { slug: { contains: "kartu-garansi", mode: "insensitive" } } },
     { product_type: { slug: { contains: "canvas-bag", mode: "insensitive" } } },
+    { product_type: { slug: { contains: "kertas-tester", mode: "insensitive" } } },
 ] as Prisma.ProductWhereInput[];
 
 /** Format a month+year to an ISO date string (first day of month). */
@@ -51,8 +52,18 @@ export class ForecastService {
         const { data } = await ForecastService.get({ ...query, take: 10000, page: 1 });
 
         const monthsShort = [
-            "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
-            "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "Mei",
+            "Jun",
+            "Jul",
+            "Agu",
+            "Sep",
+            "Okt",
+            "Nov",
+            "Des",
         ];
 
         const esc = (v: string | number | null | undefined): string => {
@@ -68,9 +79,18 @@ export class ForecastService {
                 : [];
 
         const headers = [
-            "CODE", "PRODUCT NAME", "TYPE", "SIZE",
-            ...(periods?.map((p) => `FC ${monthsShort[p.month - 1]}'${String(p.year).slice(-2)}`) || []),
-            "TOTAL FORECAST", "JUMLAH FORECAST", "% SAFETY", "SAFETY STOCK", "STOCK", "NEED PRODUCE",
+            "CODE",
+            "PRODUCT NAME",
+            "TYPE",
+            "SIZE",
+            ...(periods?.map((p) => `FC ${monthsShort[p.month - 1]}'${String(p.year).slice(-2)}`) ||
+                []),
+            "TOTAL FORECAST",
+            "JUMLAH FORECAST",
+            "% SAFETY",
+            "SAFETY STOCK",
+            "STOCK",
+            "NEED PRODUCE",
         ];
 
         const rows = data.map((item) => {
@@ -78,9 +98,14 @@ export class ForecastService {
                 item.product_code ?? "",
                 item.product_name.toUpperCase(),
                 item.product_type.toUpperCase(),
-                item.product_size.toUpperCase().replace(/PCS|ML/g, "").trim(),
+                item.product_size
+                    .toUpperCase()
+                    .replace(/PCS|ML/g, "")
+                    .trim(),
                 ...(periods?.map((p) => {
-                    const m = item.monthly_data.find((md) => md.month === p.month && md.year === p.year);
+                    const m = item.monthly_data.find(
+                        (md) => md.month === p.month && md.year === p.year,
+                    );
                     return m ? Math.round(Number(m.final_forecast ?? m.base_forecast)) : 0;
                 }) || []),
                 Math.round(Number(item.safety_stock_summary?.total_forecast ?? 0)),
@@ -156,7 +181,10 @@ export class ForecastService {
         });
         const existingAddRatioMap = new Map<string, number>();
         for (const f of existingForecasts) {
-            existingAddRatioMap.set(`${f.product_id}|${f.month}|${f.year}`, Number(f.additional_ratio ?? 0));
+            existingAddRatioMap.set(
+                `${f.product_id}|${f.month}|${f.year}`,
+                Number(f.additional_ratio ?? 0),
+            );
         }
 
         const [anchorM1Sales, anchorM0Sales, historicalSales, currentStock] = await Promise.all([
@@ -196,7 +224,7 @@ export class ForecastService {
             ...anchorM1Sales.map((s) => s.product_id),
             ...anchorM0Sales.map((s) => s.product_id),
         ]);
-        
+
         const anchorM1Map = new Map(anchorM1Sales.map((s) => [s.product_id, Number(s.quantity)]));
         const anchorM0Map = new Map(anchorM0Sales.map((s) => [s.product_id, Number(s.quantity)]));
         if (anchorSalesSet.size === 0) {
@@ -219,7 +247,9 @@ export class ForecastService {
             );
         }
 
-        const stockMap = new Map(currentStock.map((s) => [s.product_id, Number(s._sum.quantity ?? 0)]));
+        const stockMap = new Map(
+            currentStock.map((s) => [s.product_id, Number(s._sum.quantity ?? 0)]),
+        );
 
         const MIN_DATA = 3;
         const batch: {
@@ -263,7 +293,7 @@ export class ForecastService {
 
             const rawHistory = histMap.get(product.id) ?? [];
             const firstNonZero = rawHistory.findIndex((v) => v > 0);
-            
+
             // Per requirements: Include M in history if it's "Forecasting 1"
             // But usually history for statistical engine stops at M-1
             const engineHistory = firstNonZero >= 0 ? rawHistory.slice(firstNonZero, -1) : [];
@@ -275,7 +305,12 @@ export class ForecastService {
             }
 
             const currentActual = rawHistory[rawHistory.length - 1] ?? 0; // M
-            const { forecasted, modelActuallyUsed, mae: engineMae, errors: historyErrors } = runForecastEngine(
+            const {
+                forecasted,
+                modelActuallyUsed,
+                mae: engineMae,
+                errors: historyErrors,
+            } = runForecastEngine(
                 model_used,
                 engineHistory.length >= 2 ? engineHistory : [0, 0],
                 horizon,
@@ -285,14 +320,14 @@ export class ForecastService {
             const m0Actual = anchorM0Map.get(product.id) ?? 0;
             const lastActual = rawHistory[rawHistory.length - 2] ?? 0; // M-1
             const firstForecastVal = forecasted[0] ?? 0;
-            
+
             // Per requirement #9: "Forecast 1 maka gunakan Sales Actual M (Bulan ini)"
             // Otherwise use M-1 (Jantung)
             const resolvedAnchorActual = m1Actual > 0 ? m1Actual : m0Actual;
             const deviation1 = Math.abs(firstForecastVal - resolvedAnchorActual);
-            
+
             // Robust MAE Fallback: Ensure MAE is not 0 if there is any deviation
-            const mae = engineMae > 0 ? engineMae : (deviation1 > 0 ? deviation1 : 0);
+            const mae = engineMae > 0 ? engineMae : deviation1 > 0 ? deviation1 : 0;
             const system_ratio = lastActual > 0 ? (firstForecastVal - lastActual) / lastActual : 0;
 
             // Calculate Safety Stock
@@ -305,11 +340,12 @@ export class ForecastService {
             for (let i = 0; i < monthsRange.length; i++) {
                 const m = monthsRange[i]!;
                 const projected = isFinite(forecasted[i] ?? 0) ? (forecasted[i] ?? 0) : 0;
-                const existingAddRatio = existingAddRatioMap.get(`${product.id}|${m.month}|${m.year}`) ?? 0;
+                const existingAddRatio =
+                    existingAddRatioMap.get(`${product.id}|${m.month}|${m.year}`) ?? 0;
                 const isActionable = i === 0;
 
                 // Mother Formula: Base * (1 + (SS% + Add%)/100)
-                const effectiveRatio = isActionable ? (ssRatio + existingAddRatio) : existingAddRatio;
+                const effectiveRatio = isActionable ? ssRatio + existingAddRatio : existingAddRatio;
                 const finalForecast = projected * (1 + effectiveRatio / 100);
 
                 // Calculate Need Produce only for actionable month
@@ -369,19 +405,21 @@ export class ForecastService {
             for (let ci = 0; ci < batch.length; ci += CHUNK_SIZE) {
                 const chunk = batch.slice(ci, ci + CHUNK_SIZE);
 
-                const valueRows = chunk.map((f: any) => {
-                    const trend = f.trend;
-                    const model = f.model_used;
-                    return [
-                        `(${f.product_id}, ${f.month}, ${f.year},`,
-                        `'${trend}'::"Trend", 'DRAFT'::"ForecastStatus",`,
-                        `${f.base_forecast}, ${f.final_forecast}, 1, true,`,
-                        `'${model}'::"ForecastModel", ${f.system_ratio}, ${f.additional_ratio},`,
-                        `'${f.forecast_for}'::date, '${f.generated_in}'::date, ${f.is_actionable},`,
-                        `${f.absolute_error}, ${f.need_produce},`,
-                        `'${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`,
-                    ].join(" ");
-                }).join(",\n");
+                const valueRows = chunk
+                    .map((f: any) => {
+                        const trend = f.trend;
+                        const model = f.model_used;
+                        return [
+                            `(${f.product_id}, ${f.month}, ${f.year},`,
+                            `'${trend}'::"Trend", 'DRAFT'::"ForecastStatus",`,
+                            `${f.base_forecast}, ${f.final_forecast}, 1, true,`,
+                            `'${model}'::"ForecastModel", ${f.system_ratio}, ${f.additional_ratio},`,
+                            `'${f.forecast_for}'::date, '${f.generated_in}'::date, ${f.is_actionable},`,
+                            `${f.absolute_error}, ${f.need_produce},`,
+                            `'${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`,
+                        ].join(" ");
+                    })
+                    .join(",\n");
 
                 await prisma.$executeRawUnsafe(`
                     INSERT INTO "forecasts" (
@@ -414,9 +452,12 @@ export class ForecastService {
             // 2. Bulk Upsert Safety Stock
             for (let ci = 0; ci < ssBatch.length; ci += CHUNK_SIZE) {
                 const chunk = ssBatch.slice(ci, ci + CHUNK_SIZE);
-                const valueRows = chunk.map((s) => 
-                    `(${s.product_id}, ${s.month}, ${s.year}, ${s.mae}, ${s.ss_qty}, ${s.ss_ratio}, ${s.z_value}, 0, ${s.avg_forecast}, ${horizon}, ${s.total_forecast}, ${s.need_produce}, '${JSON.stringify(s.absolute_error)}'::jsonb, '${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`
-                ).join(",\n");
+                const valueRows = chunk
+                    .map(
+                        (s) =>
+                            `(${s.product_id}, ${s.month}, ${s.year}, ${s.mae}, ${s.ss_qty}, ${s.ss_ratio}, ${s.z_value}, 0, ${s.avg_forecast}, ${horizon}, ${s.total_forecast}, ${s.need_produce}, '${JSON.stringify(s.absolute_error)}'::jsonb, '${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`,
+                    )
+                    .join(",\n");
 
                 await prisma.$executeRawUnsafe(`
                     INSERT INTO "safety_stock" (
@@ -462,9 +503,14 @@ export class ForecastService {
         if (!product) throw new ApiError(404, "Produk tidak ditemukan.");
 
         const isOthersProduct = await ForecastService.checkIsOthersSlug(product.product_type?.slug);
-        
+
         // Resolve manual ratio (support both 'ratio' and 'additional_ratio')
-        const manualRatio = ratio !== undefined ? ratio : (additional_ratio !== undefined ? additional_ratio : undefined);
+        const manualRatio =
+            ratio !== undefined
+                ? ratio
+                : additional_ratio !== undefined
+                  ? additional_ratio
+                  : undefined;
 
         const existing = await prisma.forecast.findFirst({
             where: { product_id, month, year, is_latest: true },
@@ -472,27 +518,39 @@ export class ForecastService {
 
         let resolvedBase: number;
         if (existing) {
-            resolvedBase = final_forecast !== undefined ? final_forecast : Number(existing.base_forecast);
+            resolvedBase =
+                final_forecast !== undefined ? final_forecast : Number(existing.base_forecast);
         } else {
             const prev = new Date(year, month - 2, 1);
             const sales = await prisma.productIssuance.findFirst({
-                where: { product_id, month: prev.getMonth() + 1, year: prev.getFullYear(), type: "ALL" },
+                where: {
+                    product_id,
+                    month: prev.getMonth() + 1,
+                    year: prev.getFullYear(),
+                    type: "ALL",
+                },
             });
-            resolvedBase = final_forecast !== undefined ? final_forecast : Number(sales?.quantity ?? 0);
+            resolvedBase =
+                final_forecast !== undefined ? final_forecast : Number(sales?.quantity ?? 0);
         }
 
-        const resolvedRatio = manualRatio !== undefined ? manualRatio : (existing ? Number(existing.ratio ?? existing.additional_ratio ?? 0) : 0);
-        
+        const resolvedRatio =
+            manualRatio !== undefined
+                ? manualRatio
+                : existing
+                  ? Number(existing.ratio ?? existing.additional_ratio ?? 0)
+                  : 0;
+
         // Fetch Safety Stock ratio for M1 adjustment
         const ss = await prisma.safetyStock.findFirst({
             where: { product_id, month, year },
-            orderBy: { created_at: 'desc' }
+            orderBy: { created_at: "desc" },
         });
         const ssRatio = ss ? Number(ss.safety_stock_ratio) : 0;
         const isActionable = existing?.is_actionable ?? false;
 
         // Mother Formula: Base * (1 + (SS% + Add%)/100)
-        const resolvedFinal = isActionable 
+        const resolvedFinal = isActionable
             ? resolvedBase * (1 + (ssRatio + resolvedRatio) / 100)
             : resolvedBase * (1 + resolvedRatio / 100);
 
@@ -537,16 +595,20 @@ export class ForecastService {
                 return { month: d.getMonth() + 1, year: d.getFullYear() };
             });
 
-            const valueRows = monthsRange.map((m) => {
-                const isTarget = m.month === month && m.year === year;
-                const mRatio = isTarget ? resolvedRatio : 0;
-                const mFinal = resolvedBase * (1 + mRatio / 100);
-                return `(${product_id}, ${m.month}, ${m.year}, 'STABLE'::"Trend", 'ADJUSTED'::"ForecastStatus", ` +
-                       `${resolvedBase}, ${mFinal}, ${mRatio}, ${mRatio}, ` +
-                       `1, true, 'LINEAR_REGRESSION'::"ForecastModel", 0, ` +
-                       `'${formatMonthISO(m.year, m.month)}'::date, '${nowIso.slice(0, 10)}'::date, false, ` +
-                       `'${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`;
-            }).join(",\n");
+            const valueRows = monthsRange
+                .map((m) => {
+                    const isTarget = m.month === month && m.year === year;
+                    const mRatio = isTarget ? resolvedRatio : 0;
+                    const mFinal = resolvedBase * (1 + mRatio / 100);
+                    return (
+                        `(${product_id}, ${m.month}, ${m.year}, 'STABLE'::"Trend", 'ADJUSTED'::"ForecastStatus", ` +
+                        `${resolvedBase}, ${mFinal}, ${mRatio}, ${mRatio}, ` +
+                        `1, true, 'LINEAR_REGRESSION'::"ForecastModel", 0, ` +
+                        `'${formatMonthISO(m.year, m.month)}'::date, '${nowIso.slice(0, 10)}'::date, false, ` +
+                        `'${nowIso}'::timestamptz, '${nowIso}'::timestamptz)`
+                    );
+                })
+                .join(",\n");
 
             await prisma.$executeRawUnsafe(`
                 INSERT INTO "forecasts" (
@@ -574,8 +636,14 @@ export class ForecastService {
             await prisma.safetyStock.upsert({
                 where: { product_id_month_year: { product_id, month, year } },
                 create: {
-                    product_id, month, year, mean_absolute_error: 0, safety_stock_quantity: 0,
-                    safety_stock_ratio: 0, z_value_used: Number(product.z_value ?? 1.65), additional_ratio: resolvedRatio,
+                    product_id,
+                    month,
+                    year,
+                    mean_absolute_error: 0,
+                    safety_stock_quantity: 0,
+                    safety_stock_ratio: 0,
+                    z_value_used: Number(product.z_value ?? 1.65),
+                    additional_ratio: resolvedRatio,
                 },
                 update: { additional_ratio: resolvedRatio },
             });
@@ -586,7 +654,9 @@ export class ForecastService {
 
     // ── GET (Merged logic for Engine + New UI features) ──────────────────────
 
-    static async get(query: QueryForecastDTO): Promise<{ data: ResponseForecastDTO[]; len: number }> {
+    static async get(
+        query: QueryForecastDTO,
+    ): Promise<{ data: ResponseForecastDTO[]; len: number }> {
         const now = new Date();
         const anchorMonth = query.start_month ?? now.getMonth() + 1;
         const anchorYear = query.start_year ?? now.getFullYear();
@@ -693,13 +763,13 @@ export class ForecastService {
         const actualSalesQueryMonths = [
             ...monthsWindow.map((m) => ({ month: m.month, year: m.year })),
             { month: anchorRefDate.getUTCMonth() + 1, year: anchorRefDate.getUTCFullYear() },
-            ...history3MonthsWindow.map(m => ({ month: m.month, year: m.year }))
+            ...history3MonthsWindow.map((m) => ({ month: m.month, year: m.year })),
         ];
 
         const actualSales = await prisma.productIssuance.findMany({
-            where: { 
+            where: {
                 product_id: { in: productsRaw.map((p) => p.id) },
-                OR: actualSalesQueryMonths
+                OR: actualSalesQueryMonths,
             },
         });
         const actualSalesMap = new Map<string, number>();
@@ -721,15 +791,20 @@ export class ForecastService {
         }
 
         const data: ResponseForecastDTO[] = productsRaw.map((p) => {
-            const forecasts = typeof p.forecasts_data === "string" ? JSON.parse(p.forecasts_data) : (p.forecasts_data ?? []);
-            const ssRaw = typeof p.safety_stock_data === "string" ? JSON.parse(p.safety_stock_data) : p.safety_stock_data;
+            const forecasts =
+                typeof p.forecasts_data === "string"
+                    ? JSON.parse(p.forecasts_data)
+                    : (p.forecasts_data ?? []);
+            const ssRaw =
+                typeof p.safety_stock_data === "string"
+                    ? JSON.parse(p.safety_stock_data)
+                    : p.safety_stock_data;
             const addSsRatio = ssRaw ? Number(ssRaw.additional_ratio ?? 0) : 0;
             const engineSsRatio = ssRaw ? Number(ssRaw.safety_stock_ratio ?? 0) : 0;
             const avgForecast = ssRaw ? Number(ssRaw.avg_forecast ?? 0) : 0;
             const baseSsQty = ssRaw ? Number(ssRaw.safety_stock_quantity ?? 0) : 0;
-            const effectiveSsQty = avgForecast > 0
-                ? (avgForecast * (engineSsRatio + addSsRatio)) / 100
-                : baseSsQty;
+            const effectiveSsQty =
+                avgForecast > 0 ? (avgForecast * (engineSsRatio + addSsRatio)) / 100 : baseSsQty;
 
             const monthly_data = monthsWindow.map((m) => {
                 const f = forecasts.find((x: any) => x.month === m.month && x.year === m.year);
@@ -745,57 +820,86 @@ export class ForecastService {
                     : baseFc * (1 + perMonthAddRatio / 100);
 
                 return {
-                    month: m.month, year: m.year, period: `${m.month}/${m.year}`,
+                    month: m.month,
+                    year: m.year,
+                    period: `${m.month}/${m.year}`,
                     base_forecast: baseFc,
                     final_forecast: finalFc,
-                    trend: f?.trend ?? "STABLE", status: f?.status ?? null, is_current_month: m.is_current_month, is_actionable: isActionable,
-                    ratio: Number(f?.ratio ?? 0), additional_ratio: perMonthAddRatio, system_ratio: Number(f?.system_ratio ?? 0),
-                    model_used: f?.model_used ?? null, actual_sales: actualSalesMap.get(`${p.id}|${m.month}|${m.year}`) ?? null,
-                    percentage_value: pctMap.has(`${m.year}-${m.month}`) ? Number((Number(pctMap.get(`${m.year}-${m.month}`)!.value) * 100).toFixed(2)) : null,
+                    trend: f?.trend ?? "STABLE",
+                    status: f?.status ?? null,
+                    is_current_month: m.is_current_month,
+                    is_actionable: isActionable,
+                    ratio: Number(f?.ratio ?? 0),
+                    additional_ratio: perMonthAddRatio,
+                    system_ratio: Number(f?.system_ratio ?? 0),
+                    model_used: f?.model_used ?? null,
+                    actual_sales: actualSalesMap.get(`${p.id}|${m.month}|${m.year}`) ?? null,
+                    percentage_value: pctMap.has(`${m.year}-${m.month}`)
+                        ? Number(
+                              (Number(pctMap.get(`${m.year}-${m.month}`)!.value) * 100).toFixed(2),
+                          )
+                        : null,
                 };
             });
 
             const totalForecast = monthly_data.reduce((sum, m) => sum + m.final_forecast, 0);
-            const anchorM1Value = actualSalesMap.get(`${p.id}|${anchorRefDate.getUTCMonth() + 1}|${anchorRefDate.getUTCFullYear()}`) ?? null;
+            const anchorM1Value =
+                actualSalesMap.get(
+                    `${p.id}|${anchorRefDate.getUTCMonth() + 1}|${anchorRefDate.getUTCFullYear()}`,
+                ) ?? null;
             const anchorM0Value = actualSalesMap.get(`${p.id}|${sysMonth}|${sysYear}`) ?? null;
             const resolvedAnchorSales = anchorM1Value !== null ? anchorM1Value : anchorM0Value;
 
-            const history_3_months = history3MonthsWindow.map(m => {
+            const history_3_months = history3MonthsWindow.map((m) => {
                 const sales = actualSalesMap.get(`${p.id}|${m.month}|${m.year}`) ?? 0;
                 return {
                     month: m.month,
                     year: m.year,
                     period: `${m.month}/${m.year}`,
-                    actual_sales: sales
+                    actual_sales: sales,
                 };
             });
 
             return {
-                product_id: p.id, product_code: p.code, product_name: p.name, product_type: p.product_type_name ?? "",
-                product_size: `${p.size ?? ""} ${p.unit_name ?? ""}`.trim(), z_value: Number(p.z_value ?? 1.65),
-                distribution_percentage: p.distribution_percentage ? Number((Number(p.distribution_percentage) * 100).toFixed(2)) : 0,
-                safety_percentage: p.safety_percentage ? Math.round(Number(p.safety_percentage) * 100) : 0,
+                product_id: p.id,
+                product_code: p.code,
+                product_name: p.name,
+                product_type: p.product_type_name ?? "",
+                product_size: `${p.size ?? ""} ${p.unit_name ?? ""}`.trim(),
+                z_value: Number(p.z_value ?? 1.65),
+                distribution_percentage: p.distribution_percentage
+                    ? Number((Number(p.distribution_percentage) * 100).toFixed(2))
+                    : 0,
+                safety_percentage: p.safety_percentage
+                    ? Math.round(Number(p.safety_percentage) * 100)
+                    : 0,
                 current_stock: Number(p.current_stock ?? 0),
                 need_produce: Number(p.m1_need_produce ?? 0),
-                total_forecast: totalForecast, add_ss_ratio: addSsRatio,
+                total_forecast: totalForecast,
+                add_ss_ratio: addSsRatio,
                 anchor_actual_sales: resolvedAnchorSales,
-                anchor_period: anchorM1Value !== null ? `${anchorRefDate.getUTCMonth() + 1}/${anchorRefDate.getUTCFullYear()}` : `${sysMonth}/${sysYear}`,
+                anchor_period:
+                    anchorM1Value !== null
+                        ? `${anchorRefDate.getUTCMonth() + 1}/${anchorRefDate.getUTCFullYear()}`
+                        : `${sysMonth}/${sysYear}`,
                 safety_stock: effectiveSsQty,
                 total_demand: totalForecast + effectiveSsQty,
                 monthly_data,
                 history_3_months,
-                safety_stock_summary: ssRaw ? {
-                    safety_stock_quantity: effectiveSsQty,
-                    safety_stock_ratio: Math.round(Number(engineSsRatio + addSsRatio)),
-                    additional_ratio: addSsRatio,
-                    mean_absolute_error: Number(ssRaw.mean_absolute_error ?? 0),
-                    avg_forecast: avgForecast,
-                    total_forecast: Number(ssRaw.total_forecast ?? 0),
-                    total_demand: totalForecast + effectiveSsQty,
-                    need_produce: Number(ssRaw.need_produce ?? 0),
-                    absolute_error: ssRaw.absolute_error,
-                    last_updated: ssRaw.created_at,
-                } : null,
+                safety_stock_summary: ssRaw
+                    ? {
+                          safety_stock_quantity: effectiveSsQty,
+                          safety_stock_ratio: Math.round(Number(engineSsRatio + addSsRatio)),
+                          additional_ratio: addSsRatio,
+                          mean_absolute_error: Number(ssRaw.mean_absolute_error ?? 0),
+                          avg_forecast: avgForecast,
+                          total_forecast: Number(ssRaw.total_forecast ?? 0),
+                          total_demand: totalForecast + effectiveSsQty,
+                          need_produce: Number(ssRaw.need_produce ?? 0),
+                          absolute_error: ssRaw.absolute_error,
+                          last_updated: ssRaw.created_at,
+                      }
+                    : null,
             };
         });
 
@@ -803,7 +907,9 @@ export class ForecastService {
     }
 
     static async detail(product_id: number, month: number, year: number) {
-        const row = await prisma.forecast.findFirst({ where: { product_id, month, year, is_latest: true } });
+        const row = await prisma.forecast.findFirst({
+            where: { product_id, month, year, is_latest: true },
+        });
         if (!row) throw new ApiError(404, "Data forecast tidak ditemukan");
         return {
             ...row,
@@ -824,7 +930,9 @@ export class ForecastService {
     }
 
     static async deleteByPeriod(data: DeleteForecastByPeriodDTO) {
-        const result = await prisma.forecast.deleteMany({ where: { month: data.month, year: data.year } });
+        const result = await prisma.forecast.deleteMany({
+            where: { month: data.month, year: data.year },
+        });
         return { count: result.count };
     }
 
@@ -840,28 +948,37 @@ export class ForecastService {
 
     static async upsertSafetyRatio(body: UpsertSafetyRatioDTO) {
         const { product_id, month, year, add_ss_ratio } = body;
-        const product = await prisma.product.findUnique({ where: { id: product_id }, select: { z_value: true } });
+        const product = await prisma.product.findUnique({
+            where: { id: product_id },
+            select: { z_value: true },
+        });
         if (!product) throw new ApiError(404, "Produk tidak ditemukan.");
 
         await prisma.safetyStock.upsert({
             where: { product_id_month_year: { product_id, month, year } },
             create: {
-                product_id, month, year, mean_absolute_error: 0, safety_stock_quantity: 0,
-                safety_stock_ratio: 0, z_value_used: Number(product.z_value ?? 1.65), additional_ratio: add_ss_ratio,
+                product_id,
+                month,
+                year,
+                mean_absolute_error: 0,
+                safety_stock_quantity: 0,
+                safety_stock_ratio: 0,
+                z_value_used: Number(product.z_value ?? 1.65),
+                additional_ratio: add_ss_ratio,
             },
             update: { additional_ratio: add_ss_ratio },
         });
 
         // Sync back to Forecast table if an actionable forecast exists for this period
         const actionable = await prisma.forecast.findFirst({
-            where: { product_id, month, year, is_actionable: true, is_latest: true }
+            where: { product_id, month, year, is_actionable: true, is_latest: true },
         });
 
         if (actionable) {
             // Update the forecast record to match the new additional_ratio
             const resolvedBase = Number(actionable.base_forecast);
             const ss = await prisma.safetyStock.findUnique({
-                where: { product_id_month_year: { product_id, month, year } }
+                where: { product_id_month_year: { product_id, month, year } },
             });
             const ssRatio = ss ? Number(ss.safety_stock_ratio) : 0;
             const resolvedFinal = resolvedBase * (1 + (ssRatio + add_ss_ratio) / 100);
@@ -872,9 +989,9 @@ export class ForecastService {
                     additional_ratio: add_ss_ratio,
                     ratio: add_ss_ratio,
                     final_forecast: resolvedFinal,
-                    status: 'ADJUSTED',
-                    updated_at: new Date()
-                }
+                    status: "ADJUSTED",
+                    updated_at: new Date(),
+                },
             });
         }
 
@@ -897,7 +1014,9 @@ export class ForecastService {
     private static async checkIsOthersSlug(slug: string | null | undefined) {
         if (!slug) return false;
         const s = slug.toLowerCase();
-        return ["display", "kertas", "botol", "paper-bag", "kartu-garansi", "canvas-bag"].some(x => s.includes(x));
+        return ["display", "kertas", "botol", "paper-bag", "kartu-garansi", "canvas-bag"].some(
+            (x) => s.includes(x),
+        );
     }
 
     private static resolveHorizonMonths(now: Date, horizon: number) {
