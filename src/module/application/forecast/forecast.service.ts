@@ -28,13 +28,13 @@ const PRODUCT_SELECT = {
 } as const;
 
 export const OTHERS_PRODUCT_FILTER = [
+    { product_type: { slug: { contains: "kertas-tester", mode: "insensitive" } } },
     { product_type: { slug: { contains: "display", mode: "insensitive" } } },
     { product_type: { slug: { contains: "kertas", mode: "insensitive" } } },
     { product_type: { slug: { contains: "botol", mode: "insensitive" } } },
     { product_type: { slug: { contains: "paper-bag", mode: "insensitive" } } },
     { product_type: { slug: { contains: "kartu-garansi", mode: "insensitive" } } },
     { product_type: { slug: { contains: "canvas-bag", mode: "insensitive" } } },
-    { product_type: { slug: { contains: "kertas-tester", mode: "insensitive" } } },
 ] as Prisma.ProductWhereInput[];
 
 /** Format a month+year to an ISO date string (first day of month). */
