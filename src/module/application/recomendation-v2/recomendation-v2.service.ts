@@ -213,18 +213,17 @@ export class RecomendationV2Service {
                             CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
                             THEN GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0))
                             ELSE f.final_forecast END
-                            * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                            * rec.quantity)
                         ), 0) AS total_forecast_needed,
                         COALESCE(SUM(
                             CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
-                            THEN FLOOR(GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0)) * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                            THEN FLOOR(GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0)) * rec.quantity)
                             ELSE 0 END
                         ), 0) AS m1_forecast_needed
                     FROM filtered_materials fm
                     JOIN "recipes" rec ON rec.raw_mat_id = fm.id AND rec.is_active = true
                     JOIN "forecasts" f ON f.product_id = rec.product_id
                     JOIN "products" p ON p.id = f.product_id
-                    LEFT JOIN "product_size" ps ON ps.id = p.size_id
                     LEFT JOIN (
                         SELECT product_id, SUM(quantity) as total_qty
                         FROM "product_inventories"
@@ -239,17 +238,14 @@ export class RecomendationV2Service {
                     SELECT
                         fm.id AS raw_mat_id,
                         COALESCE(SUM(
-                            FLOOR(dss.dynamic_ss_qty * rec.quantity * 
-                            CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                            FLOOR(dss.dynamic_ss_qty * rec.quantity)
                         ), 0) AS dynamic_ss_x_resep,
                         COALESCE(SUM(
-                            FLOOR(COALESCE(pi_agg.total_qty, 0) * rec.quantity * 
-                            CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                            FLOOR(COALESCE(pi_agg.total_qty, 0) * rec.quantity)
                         ), 0) AS stock_fg_x_resep
                     FROM filtered_materials fm
                     JOIN "recipes" rec ON rec.raw_mat_id = fm.id AND rec.is_active = true
                     JOIN "products" p ON p.id = rec.product_id
-                    LEFT JOIN "product_size" ps ON ps.id = p.size_id
                     LEFT JOIN prod_dynamic_ss dss ON dss.product_id = p.id
                     LEFT JOIN (
                          SELECT product_id, SUM(quantity) as total_qty
@@ -262,7 +258,7 @@ export class RecomendationV2Service {
                 rm_current_sales_agg AS (
                     SELECT
                         fm.id as raw_mat_id,
-                        SUM(FLOOR(pi.quantity * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)) as current_month_sales
+                        SUM(FLOOR(pi.quantity * rec.quantity)) as current_month_sales
                     FROM (
                         SELECT 
                             product_id, year, month,
@@ -277,8 +273,6 @@ export class RecomendationV2Service {
                     ) pi
                     JOIN "recipes" rec ON rec.product_id = pi.product_id AND rec.is_active = true
                     JOIN filtered_materials fm ON fm.id = rec.raw_mat_id
-                    LEFT JOIN "products" p ON p.id = pi.product_id
-                    LEFT JOIN "product_size" ps ON ps.id = p.size_id
                     GROUP BY fm.id
                 )
 
@@ -362,11 +356,10 @@ export class RecomendationV2Service {
                              )
                         ), '[]'::json)
                         FROM (
-                            SELECT ag_sub.month, ag_sub.year, SUM(FLOOR(ag_sub.total_month_qty * rec.quantity * 
-                                CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                            SELECT ag_sub.month, ag_sub.year, SUM(FLOOR(ag_sub.total_month_qty * rec.quantity)
                             ) as qty
                             FROM (
-                                SELECT 
+                                SELECT
                                     product_id, year, month,
                                     COALESCE(
                                         NULLIF(SUM(CASE WHEN type = 'ALL' THEN quantity ELSE 0 END), 0),
@@ -379,8 +372,6 @@ export class RecomendationV2Service {
                                 GROUP BY product_id, year, month
                             ) ag_sub
                             JOIN "recipes" rec ON rec.product_id = ag_sub.product_id AND rec.is_active = true
-                            JOIN "products" p ON p.id = ag_sub.product_id
-                            LEFT JOIN "product_size" ps ON ps.id = p.size_id
                             WHERE rec.raw_mat_id = fm.id
                             GROUP BY ag_sub.month, ag_sub.year
                         ) ag
@@ -401,18 +392,16 @@ export class RecomendationV2Service {
                                 CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
                                 THEN GREATEST(0, f.final_forecast - COALESCE(pi_fg2.total_qty, 0))
                                 ELSE f.final_forecast END
-                                * rec.quantity * CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                                * rec.quantity)
                             ) as total_needed
                             FROM "forecasts" f
                             JOIN "recipes" rec ON rec.product_id = f.product_id AND rec.is_active = true
-                            JOIN "products" p ON p.id = f.product_id
-                            LEFT JOIN "product_size" ps ON ps.id = p.size_id
                             LEFT JOIN (
                                 SELECT product_id, SUM(quantity) as total_qty
                                 FROM "product_inventories"
                                 WHERE month = ${fgInvMonth} AND year = ${fgInvYear}
                                 GROUP BY product_id
-                            ) pi_fg2 ON pi_fg2.product_id = p.id
+                            ) pi_fg2 ON pi_fg2.product_id = f.product_id
                             WHERE rec.raw_mat_id = fm.id
                               AND (f.year * 12 + f.month) >= ${fcStartY * 12 + fcStartM}
                               AND (f.year * 12 + f.month) <= ${fcEndY * 12 + fcEndM}
@@ -448,13 +437,10 @@ export class RecomendationV2Service {
                 LEFT JOIN LATERAL (
                     SELECT COALESCE(SUM(COALESCE(o.quantity, mr.calc_needed)), 0) AS total_needed
                     FROM (
-                        SELECT f.month, f.year, SUM(FLOOR(f.final_forecast * rec.quantity * 
-                            CASE WHEN rec.use_size_calc THEN COALESCE(ps.size, 1) ELSE 1 END)
+                        SELECT f.month, f.year, SUM(FLOOR(f.final_forecast * rec.quantity)
                         ) as calc_needed
                         FROM "recipes" rec
                         JOIN "forecasts" f ON f.product_id = rec.product_id
-                        JOIN "products" p ON p.id = f.product_id
-                        LEFT JOIN "product_size" ps ON ps.id = p.size_id
                         WHERE rec.raw_mat_id = fm.id
                           AND mro.horizon IS NOT NULL
                           AND (f.year * 12 + f.month) >= ${currentYear * 12 + currentMonth}
