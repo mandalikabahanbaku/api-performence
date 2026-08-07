@@ -211,13 +211,13 @@ export class RecomendationV2Service {
                         fm.id AS raw_mat_id,
                         COALESCE(SUM(FLOOR(
                             CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
-                            THEN GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0))
-                            ELSE f.final_forecast END
+                            THEN GREATEST(0, f.base_forecast - COALESCE(pi_fg.total_qty, 0))
+                            ELSE f.base_forecast END
                             * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                         ), 0) AS total_forecast_needed,
                         COALESCE(SUM(
                             CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
-                            THEN FLOOR(GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0)) * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
+                            THEN FLOOR(GREATEST(0, f.base_forecast - COALESCE(pi_fg.total_qty, 0)) * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                             ELSE 0 END
                         ), 0) AS m1_forecast_needed
                     FROM filtered_materials fm
@@ -390,8 +390,8 @@ export class RecomendationV2Service {
                         FROM (
                             SELECT f.month, f.year, SUM(FLOOR(
                                 CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
-                                THEN GREATEST(0, f.final_forecast - COALESCE(pi_fg2.total_qty, 0))
-                                ELSE f.final_forecast END
+                                THEN GREATEST(0, f.base_forecast - COALESCE(pi_fg2.total_qty, 0))
+                                ELSE f.base_forecast END
                                 * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                             ) as total_needed
                             FROM "forecasts" f
@@ -437,7 +437,7 @@ export class RecomendationV2Service {
                 LEFT JOIN LATERAL (
                     SELECT COALESCE(SUM(COALESCE(o.quantity, mr.calc_needed)), 0) AS total_needed
                     FROM (
-                        SELECT f.month, f.year, SUM(FLOOR(f.final_forecast * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
+                        SELECT f.month, f.year, SUM(FLOOR(f.base_forecast * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                         ) as calc_needed
                         FROM "recipes" rec
                         JOIN "forecasts" f ON f.product_id = rec.product_id
@@ -858,7 +858,7 @@ export class RecomendationV2Service {
                     GROUP BY raw_material_id
                 ),
                 fc_agg AS (
-                    SELECT rec.raw_mat_id, SUM(f.final_forecast * rec.quantity *
+                    SELECT rec.raw_mat_id, SUM(f.base_forecast * rec.quantity *
                         CASE WHEN rm2.type = 'FO' OR urm2.name ILIKE ANY(ARRAY['ml', 'l', 'liter', 'ML']) THEN COALESCE(ps.size, 1) ELSE 1 END
                     )::numeric AS total
                     FROM "forecasts" f
@@ -875,7 +875,7 @@ export class RecomendationV2Service {
                         rec.raw_mat_id, 
                         SUM(
                             (
-                                (SELECT COALESCE(SUM(f2.final_forecast), 0)
+                                (SELECT COALESCE(SUM(f2.base_forecast), 0)
                                  FROM "forecasts" f2
                                  WHERE f2.product_id = p.id
                                    AND (f2.year * 12 + f2.month) >= ${bssStart}

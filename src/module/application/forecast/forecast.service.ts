@@ -330,9 +330,13 @@ export class ForecastService {
             const mae = engineMae > 0 ? engineMae : deviation1 > 0 ? deviation1 : 0;
             const system_ratio = lastActual > 0 ? (firstForecastVal - lastActual) / lastActual : 0;
 
-            // Calculate Safety Stock
+            // Calculate Safety Stock: AVG of last 4 completed months' actual sales (M-4..M-1)
             const zValue = Number(product.z_value ?? 1.65);
-            const ssQty = zValue * mae;
+            const last4Sales = rawHistory.slice(-5, -1);
+            const ssQty =
+                last4Sales.length > 0
+                    ? last4Sales.reduce((a, b) => a + b, 0) / last4Sales.length
+                    : 0;
             const totalFc = forecasted.reduce((a, b) => a + b, 0);
             const avgFc = horizon > 0 ? totalFc / horizon : 0;
             const ssRatio = firstForecastVal > 0 ? (ssQty / firstForecastVal) * 100 : 0;
