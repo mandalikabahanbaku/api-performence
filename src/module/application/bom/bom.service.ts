@@ -75,7 +75,6 @@ export class BOMService {
                 r.id,
                 r.version as recipe_version,
                 r.quantity::float8 as recipe_qty,
-                r.use_size_calc,
                 p.id as p_id, p.code as p_code, p.name as p_name, p.gender::text as p_gender,
                 pt.name as pt_name, ps.size as ps_val, u.name as u_name,
                 rm.id as rm_id, rm.barcode as rm_barcode, rm.name as rm_name,
@@ -209,7 +208,6 @@ export class BOMService {
 
             const group = groupedMap.get(r.p_id) as any;
             const itemForecast = group.forecast;
-            const pSize = Number(r.ps_val) || 0;
 
             group.items.push({
                 id: r.id,
@@ -226,19 +224,15 @@ export class BOMService {
                         period: f.period,
                         month: f.month,
                         year: f.year,
-                        value: r.use_size_calc
-                            ? Math.floor(Math.round(qty) * pSize * r.recipe_qty)
-                            : Math.floor(Math.round(qty) * r.recipe_qty),
+                        value: Math.floor(Math.round(qty) * r.recipe_qty),
                     };
                 }),
-                safety_stock_x_bom: r.use_size_calc
-                    ? Math.floor(Math.round(group.safety_stock) * pSize * r.recipe_qty)
-                    : Math.floor(Math.round(group.safety_stock) * r.recipe_qty),
+                safety_stock_x_bom: Math.floor(Math.round(group.safety_stock) * r.recipe_qty),
                 need_produce_x_bom: group.need_produce.map((np: any) => ({
                     period: np.period,
                     month: np.month,
                     year: np.year,
-                    value: r.use_size_calc ? np.value * pSize * r.recipe_qty : np.value * r.recipe_qty,
+                    value: np.value * r.recipe_qty,
                 })),
             });
         });
@@ -397,7 +391,6 @@ export class BOMService {
                 const monthly_data: Record<string, number> = {};
                 let productTotal = 0;
 
-                const pSize = Number(r.products.size?.size) || 0;
                 const productStockForNeedProduce = r.products.product_inventories.reduce(
                     (sum, pi) => sum + Number(pi.quantity), 0,
                 );
@@ -405,9 +398,7 @@ export class BOMService {
                 forecastRange.forEach((p, idx) => {
                     const fVal = forecastMap.get(`${r.product_id}-${p.month}-${p.year}`) || 0;
                     const effectiveQty = idx === 0 ? Math.max(0, fVal - productStockForNeedProduce) : fVal;
-                    const req = r.use_size_calc
-                        ? Math.floor(effectiveQty * pSize * Number(r.quantity))
-                        : Math.floor(effectiveQty * Number(r.quantity));
+                    const req = Math.floor(effectiveQty * Number(r.quantity));
                     monthly_data[p.key] = req;
                     productTotal += req;
                 });
@@ -430,9 +421,7 @@ export class BOMService {
                     const needAtMonth = Math.max(0, fValAtMonth - runningStockDetail);
                     runningStockDetail = Math.max(0, runningStockDetail - fValAtMonth);
                     
-                    const val = r.use_size_calc
-                        ? needAtMonth * pSize * Number(r.quantity)
-                        : needAtMonth * Number(r.quantity);
+                    const val = needAtMonth * Number(r.quantity);
 
                     return {
                         period: p.key,
@@ -445,9 +434,7 @@ export class BOMService {
                 // Calculate product-specific Sales History (Material Equivalent)
                 const productSalesHistory = salesRange.map((s) => {
                     const sVal = salesMap.get(`${r.product_id}-${s.year}-${s.month}`) || 0;
-                    const val = r.use_size_calc
-                        ? Math.floor(sVal * pSize * Number(r.quantity))
-                        : Math.floor(sVal * Number(r.quantity));
+                    const val = Math.floor(sVal * Number(r.quantity));
                     return {
                         period: `${s.month}/${s.year}`,
                         month: s.month,
@@ -466,9 +453,7 @@ export class BOMService {
                     recipe_version: r.version,
                     monthly_data,
                     sales_history: productSalesHistory,
-                    safety_stock: Math.floor(r.use_size_calc 
-                        ? productSS * pSize * Number(r.quantity) 
-                        : productSS * Number(r.quantity)),
+                    safety_stock: Math.floor(productSS * Number(r.quantity)),
                     need_produce: productNeedProduce,
                     exploded_at: new Date(),
                 };
