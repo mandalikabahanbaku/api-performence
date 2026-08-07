@@ -213,11 +213,11 @@ export class RecomendationV2Service {
                             CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
                             THEN GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0))
                             ELSE f.final_forecast END
-                            * rec.quantity)
+                            * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                         ), 0) AS total_forecast_needed,
                         COALESCE(SUM(
                             CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
-                            THEN FLOOR(GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0)) * rec.quantity)
+                            THEN FLOOR(GREATEST(0, f.final_forecast - COALESCE(pi_fg.total_qty, 0)) * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                             ELSE 0 END
                         ), 0) AS m1_forecast_needed
                     FROM filtered_materials fm
@@ -238,10 +238,10 @@ export class RecomendationV2Service {
                     SELECT
                         fm.id AS raw_mat_id,
                         COALESCE(SUM(
-                            FLOOR(dss.dynamic_ss_qty * rec.quantity)
+                            FLOOR(dss.dynamic_ss_qty * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                         ), 0) AS dynamic_ss_x_resep,
                         COALESCE(SUM(
-                            FLOOR(COALESCE(pi_agg.total_qty, 0) * rec.quantity)
+                            FLOOR(COALESCE(pi_agg.total_qty, 0) * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                         ), 0) AS stock_fg_x_resep
                     FROM filtered_materials fm
                     JOIN "recipes" rec ON rec.raw_mat_id = fm.id AND rec.is_active = true
@@ -258,7 +258,7 @@ export class RecomendationV2Service {
                 rm_current_sales_agg AS (
                     SELECT
                         fm.id as raw_mat_id,
-                        SUM(FLOOR(pi.quantity * rec.quantity)) as current_month_sales
+                        SUM(FLOOR(pi.quantity * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)) as current_month_sales
                     FROM (
                         SELECT 
                             product_id, year, month,
@@ -356,7 +356,7 @@ export class RecomendationV2Service {
                              )
                         ), '[]'::json)
                         FROM (
-                            SELECT ag_sub.month, ag_sub.year, SUM(FLOOR(ag_sub.total_month_qty * rec.quantity)
+                            SELECT ag_sub.month, ag_sub.year, SUM(FLOOR(ag_sub.total_month_qty * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                             ) as qty
                             FROM (
                                 SELECT
@@ -392,7 +392,7 @@ export class RecomendationV2Service {
                                 CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
                                 THEN GREATEST(0, f.final_forecast - COALESCE(pi_fg2.total_qty, 0))
                                 ELSE f.final_forecast END
-                                * rec.quantity)
+                                * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                             ) as total_needed
                             FROM "forecasts" f
                             JOIN "recipes" rec ON rec.product_id = f.product_id AND rec.is_active = true
@@ -437,7 +437,7 @@ export class RecomendationV2Service {
                 LEFT JOIN LATERAL (
                     SELECT COALESCE(SUM(COALESCE(o.quantity, mr.calc_needed)), 0) AS total_needed
                     FROM (
-                        SELECT f.month, f.year, SUM(FLOOR(f.final_forecast * rec.quantity)
+                        SELECT f.month, f.year, SUM(FLOOR(f.final_forecast * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                         ) as calc_needed
                         FROM "recipes" rec
                         JOIN "forecasts" f ON f.product_id = rec.product_id
