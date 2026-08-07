@@ -348,9 +348,8 @@ export class ForecastService {
                     existingAddRatioMap.get(`${product.id}|${m.month}|${m.year}`) ?? 0;
                 const isActionable = i === 0;
 
-                // Mother Formula: Base * (1 + (SS% + Add%)/100)
-                const effectiveRatio = isActionable ? ssRatio + existingAddRatio : existingAddRatio;
-                const finalForecast = projected * (1 + effectiveRatio / 100);
+                // Mother Formula: Base * (1 + Add%/100) — Safety Stock is shown separately, not blended in
+                const finalForecast = projected * (1 + existingAddRatio / 100);
 
                 // Calculate Need Produce only for actionable month
                 const currentStockVal = stockMap.get(product.id) ?? 0;
@@ -545,18 +544,10 @@ export class ForecastService {
                   ? Number(existing.ratio ?? existing.additional_ratio ?? 0)
                   : 0;
 
-        // Fetch Safety Stock ratio for M1 adjustment
-        const ss = await prisma.safetyStock.findFirst({
-            where: { product_id, month, year },
-            orderBy: { created_at: "desc" },
-        });
-        const ssRatio = ss ? Number(ss.safety_stock_ratio) : 0;
         const isActionable = existing?.is_actionable ?? false;
 
-        // Mother Formula: Base * (1 + (SS% + Add%)/100)
-        const resolvedFinal = isActionable
-            ? resolvedBase * (1 + (ssRatio + resolvedRatio) / 100)
-            : resolvedBase * (1 + resolvedRatio / 100);
+        // Mother Formula: Base * (1 + Add%/100) — Safety Stock is shown separately, not blended in
+        const resolvedFinal = resolvedBase * (1 + resolvedRatio / 100);
 
         const nowIso = new Date().toISOString();
         const trendVal = ForecastService.trend(resolvedFinal, resolvedBase);
@@ -817,11 +808,8 @@ export class ForecastService {
                 const perMonthAddRatio = Number(f?.additional_ratio ?? 0);
                 const isActionable = f?.is_actionable ?? false;
 
-                // Bulan M (is_actionable=true): Base × (1 + %SAFETY + %ADD_RATIO)
-                // Bulan lain: Base × (1 + %ADD_RATIO per bulan)
-                const finalFc = isActionable
-                    ? baseFc * (1 + (engineSsRatio + perMonthAddRatio) / 100)
-                    : baseFc * (1 + perMonthAddRatio / 100);
+                // Base × (1 + %ADD_RATIO per bulan) — Safety Stock is shown separately, not blended in
+                const finalFc = baseFc * (1 + perMonthAddRatio / 100);
 
                 return {
                     month: m.month,
@@ -981,11 +969,7 @@ export class ForecastService {
         if (actionable) {
             // Update the forecast record to match the new additional_ratio
             const resolvedBase = Number(actionable.base_forecast);
-            const ss = await prisma.safetyStock.findUnique({
-                where: { product_id_month_year: { product_id, month, year } },
-            });
-            const ssRatio = ss ? Number(ss.safety_stock_ratio) : 0;
-            const resolvedFinal = resolvedBase * (1 + (ssRatio + add_ss_ratio) / 100);
+            const resolvedFinal = resolvedBase * (1 + add_ss_ratio / 100);
 
             await prisma.forecast.update({
                 where: { id: actionable.id },
