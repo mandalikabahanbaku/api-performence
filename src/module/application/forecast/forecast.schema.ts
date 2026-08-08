@@ -12,6 +12,7 @@ export const RunForecastSchema = z.object({
     model_used: z
         .enum([
             "SIMPLE_MOVING_AVERAGE",
+            "MA3",
             "WEIGHTED_MOVING_AVERAGE",
             "EXPONENTIAL_SMOOTHING",
             "HOLT_WINTERS",
@@ -114,6 +115,7 @@ export type ResponseForecastDTO = {
     current_stock: number;
     need_produce: number;
     total_forecast: number;
+    model_used: string | null;
     anchor_actual_sales: number | null;
     anchor_period: string | null;
     add_ss_ratio: number;

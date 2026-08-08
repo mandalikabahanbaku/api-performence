@@ -842,6 +842,9 @@ export class ForecastService {
             const anchorM0Value = actualSalesMap.get(`${p.id}|${sysMonth}|${sysYear}`) ?? null;
             const resolvedAnchorSales = anchorM1Value !== null ? anchorM1Value : anchorM0Value;
 
+            const actionableMonth = monthly_data.find((m) => m.is_actionable) ?? monthly_data[0];
+            const modelUsed = actionableMonth?.model_used ?? null;
+
             const history_3_months = history3MonthsWindow.map((m) => {
                 const sales = actualSalesMap.get(`${p.id}|${m.month}|${m.year}`) ?? 0;
                 return {
@@ -868,6 +871,7 @@ export class ForecastService {
                 current_stock: Number(p.current_stock ?? 0),
                 need_produce: Number(p.m1_need_produce ?? 0),
                 total_forecast: totalForecast,
+                model_used: modelUsed,
                 add_ss_ratio: addSsRatio,
                 anchor_actual_sales: resolvedAnchorSales,
                 anchor_period:

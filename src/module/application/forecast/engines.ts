@@ -63,6 +63,31 @@ function runSMA(series: number[], horizon: number, window = 3): { forecasted: nu
     return { forecasted: Array.from({ length: horizon }, () => avg), mae, errors };
 }
 
+// ─── Rolling Moving Average (3-period) ────────────────────────────────────────
+
+/** Rolling MA3: each forecasted month is the avg of the trailing 3 values,
+ *  feeding its own forecasts back into the window as history runs out. */
+function runMA3(series: number[], horizon: number): { forecasted: number[]; mae: number; errors: number[] } {
+    const n = series.length;
+    if (n === 0) return { forecasted: Array(horizon).fill(0), mae: 0, errors: [] };
+
+    const fitted = series.map((_, i) => {
+        const trailing = series.slice(Math.max(0, i - 2), i + 1);
+        return trailing.reduce((a, b) => a + b, 0) / trailing.length;
+    });
+    const { mae, errors } = computeMAE(series, fitted);
+
+    const window = series.slice(-3);
+    const forecasted = Array.from({ length: horizon }, () => {
+        const avg = window.reduce((a, b) => a + b, 0) / window.length;
+        window.push(avg);
+        window.shift();
+        return avg;
+    });
+
+    return { forecasted, mae, errors };
+}
+
 // ─── Weighted Moving Average ──────────────────────────────────────────────────
 
 function runWMA(series: number[], horizon: number): { forecasted: number[]; mae: number; errors: number[] } {
@@ -154,6 +179,7 @@ function runHoltWintersAdditive(
 export type ForecastModelKey =
     | "LINEAR_REGRESSION"
     | "SIMPLE_MOVING_AVERAGE"
+    | "MA3"
     | "WEIGHTED_MOVING_AVERAGE"
     | "EXPONENTIAL_SMOOTHING"
     | "HOLT_WINTERS"
@@ -170,6 +196,10 @@ export function runForecastEngine(
         case "SIMPLE_MOVING_AVERAGE": {
             const res = runSMA(history, horizon);
             return { ...res, modelActuallyUsed: "SIMPLE_MOVING_AVERAGE" };
+        }
+        case "MA3": {
+            const res = runMA3(history, horizon);
+            return { ...res, modelActuallyUsed: "MA3" };
         }
         case "WEIGHTED_MOVING_AVERAGE": {
             const res = runWMA(history, horizon);
