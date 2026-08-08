@@ -203,10 +203,6 @@ export class RecomendationV2Service {
                     LEFT JOIN "raw_mat_categories" rmc ON rmc.id = rm.raw_mat_categories_id
                     WHERE ${typeFilter}
                       AND rm.deleted_at IS NULL
-                      AND EXISTS (
-                          SELECT 1 FROM "recipes" r2
-                          WHERE r2.raw_mat_id = rm.id AND r2.is_active = true
-                      )
                       ${searchFilter}
                 ),
 
@@ -513,10 +509,6 @@ export class RecomendationV2Service {
             LEFT JOIN "unit_raw_materials" urm ON urm.id = rm.unit_id
             WHERE ${typeFilter}
               AND rm.deleted_at IS NULL
-              AND EXISTS (
-                  SELECT 1 FROM "recipes" r2
-                  WHERE r2.raw_mat_id = rm.id AND r2.is_active = true
-              )
             --   AND rm.barcode IS DISTINCT FROM 'FO-ALK'
               ${searchFilter}
         `;
