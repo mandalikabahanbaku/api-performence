@@ -23,11 +23,8 @@ export class RecomendationV2Service {
             month,
             year,
             type,
-            sales_months = 4,
             sales_from_month,
             sales_from_year,
-            sales_to_month,
-            sales_to_year,
             forecast_months = 3,
             po_months = 3,
         } = query;
@@ -40,19 +37,29 @@ export class RecomendationV2Service {
         const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
         const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
 
-        // Explicit "from month/year to month/year" range takes priority over the
-        // legacy trailing-count (sales_months) when the user picks one via the Calendar.
-        const hasSalesRange =
-            sales_from_month != null &&
-            sales_from_year != null &&
-            sales_to_month != null &&
-            sales_to_year != null;
+        // Sales Act horizon: always "from month/year" through M-1 (the month right
+        // before the anchor). When the user hasn't picked a start, default to 3
+        // months back from the anchor — same single code path either way.
+        const DEFAULT_SALES_MONTHS = 3;
+        let salesFromMonth = sales_from_month;
+        let salesFromYear = sales_from_year;
+        if (salesFromMonth == null || salesFromYear == null) {
+            salesFromMonth = currentMonth;
+            salesFromYear = currentYear;
+            for (let i = 0; i < DEFAULT_SALES_MONTHS; i++) {
+                salesFromMonth -= 1;
+                if (salesFromMonth <= 0) {
+                    salesFromMonth += 12;
+                    salesFromYear -= 1;
+                }
+            }
+        }
 
         const salesPeriods: { month: number; year: number; key: string }[] = [];
-        if (hasSalesRange) {
-            const endKey = sales_to_year! * 12 + sales_to_month!;
-            let m = sales_from_month!;
-            let y = sales_from_year!;
+        {
+            const endKey = prevYear * 12 + prevMonth;
+            let m = salesFromMonth;
+            let y = salesFromYear;
             const MAX_RANGE_MONTHS = 60;
             for (let i = 0; y * 12 + m <= endKey && i < MAX_RANGE_MONTHS; i++) {
                 salesPeriods.push({ month: m, year: y, key: `${m}-${y}` });
@@ -61,16 +68,6 @@ export class RecomendationV2Service {
                     m = 1;
                     y += 1;
                 }
-            }
-        } else {
-            for (let i = sales_months; i >= 1; i--) {
-                let m = currentMonth - i;
-                let y = currentYear;
-                while (m <= 0) {
-                    m += 12;
-                    y -= 1;
-                }
-                salesPeriods.push({ month: m, year: y, key: `${m}-${y}` });
             }
         }
 

@@ -15,7 +15,7 @@ import {
 
 export class RecomendationV2Controller {
     static async list(c: Context) {
-        const { page, take, search, month, year, type, sales_months, forecast_months, po_months, sortBy, order } = c.req.query();
+        const { page, take, search, month, year, type, sales_from_month, sales_from_year, forecast_months, po_months, sortBy, order } = c.req.query();
 
         const params: QueryRecomendationV2DTO = {
             page: page ? Number(page) : 1,
@@ -24,7 +24,8 @@ export class RecomendationV2Controller {
             month: month ? Number(month) : undefined,
             year: year ? Number(year) : undefined,
             type: type as QueryRecomendationV2DTO["type"],
-            sales_months: sales_months ? Number(sales_months) : 3,
+            sales_from_month: sales_from_month ? Number(sales_from_month) : undefined,
+            sales_from_year: sales_from_year ? Number(sales_from_year) : undefined,
             forecast_months: forecast_months ? Number(forecast_months) : 3,
             po_months: po_months ? Number(po_months) : 3,
             sortBy,
@@ -34,9 +35,9 @@ export class RecomendationV2Controller {
         const result = await RecomendationV2Service.list(params);
         return ApiResponse.sendSuccess(c, result, 200);
     }
-    
+
     static async export(c: Context) {
-        const { search, month, year, type, sales_months, forecast_months, po_months, sortBy, order, visibleColumns, columnOrder } = c.req.query();
+        const { search, month, year, type, sales_from_month, sales_from_year, forecast_months, po_months, sortBy, order, visibleColumns, columnOrder } = c.req.query();
 
         const params: QueryRecomendationV2DTO = {
             page: 1,
@@ -45,7 +46,8 @@ export class RecomendationV2Controller {
             month: month ? Number(month) : undefined,
             year: year ? Number(year) : undefined,
             type: type as QueryRecomendationV2DTO["type"],
-            sales_months: sales_months ? Number(sales_months) : 3,
+            sales_from_month: sales_from_month ? Number(sales_from_month) : undefined,
+            sales_from_year: sales_from_year ? Number(sales_from_year) : undefined,
             forecast_months: forecast_months ? Number(forecast_months) : 3,
             po_months: po_months ? Number(po_months) : 3,
             sortBy,
