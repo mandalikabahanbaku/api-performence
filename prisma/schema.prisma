@@ -216,6 +216,7 @@ model RawMaterial {
   rawmaterial_inventories RawMaterialInventory[]
   open_pos                RawMaterialOpenPo[]
   need_overrides          RawMaterialNeedOverride[]
+  sales_overrides         RawMaterialSalesOverride[]
   raw_mat_category        RawMatCategories?         @relation(fields: [raw_mat_categories_id], references: [id])
   supplier                Supplier?                 @relation(fields: [supplier_id], references: [id])
   unit_raw_material       UnitRawMaterial           @relation(fields: [unit_id], references: [id], onDelete: Cascade)
@@ -824,6 +825,21 @@ model RawMaterialNeedOverride {
   @@unique([raw_material_id, month, year])
   @@index([raw_material_id])
   @@map("raw_material_need_overrides")
+}
+
+model RawMaterialSalesOverride {
+  id              Int         @id @default(autoincrement())
+  raw_material_id Int
+  month           Int         @db.SmallInt
+  year            Int         @db.SmallInt
+  quantity        Decimal     @db.Decimal(18, 2)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+  raw_material    RawMaterial @relation(fields: [raw_material_id], references: [id], onDelete: Cascade)
+
+  @@unique([raw_material_id, month, year])
+  @@index([raw_material_id])
+  @@map("raw_material_sales_overrides")
 }
 
 model StockReturn {

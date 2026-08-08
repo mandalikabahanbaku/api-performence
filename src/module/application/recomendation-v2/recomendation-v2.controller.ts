@@ -11,6 +11,8 @@ import {
     RequestSaveNeedOverrideSchema,
     RequestDeleteNeedOverrideSchema,
     RequestBulkSaveNeedOverrideSchema,
+    RequestSaveSalesOverrideSchema,
+    RequestDeleteSalesOverrideSchema,
 } from "./recomendation-v2.schema.js";
 
 export class RecomendationV2Controller {
@@ -124,6 +126,20 @@ export class RecomendationV2Controller {
         const body = await c.req.json();
         const validBody = RequestBulkSaveNeedOverrideSchema.parse(body);
         const result = await RecomendationV2Service.bulkSaveNeedOverride(validBody);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async saveSalesOverride(c: Context) {
+        const body = await c.req.json();
+        const validBody = RequestSaveSalesOverrideSchema.parse(body);
+        const result = await RecomendationV2Service.saveSalesOverride(validBody);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async deleteSalesOverride(c: Context) {
+        const body = await c.req.json();
+        const validBody = RequestDeleteSalesOverrideSchema.parse(body);
+        const result = await RecomendationV2Service.deleteSalesOverride(validBody);
         return ApiResponse.sendSuccess(c, result, 200);
     }
 }

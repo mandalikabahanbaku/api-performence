@@ -9,6 +9,7 @@ import {
     RequestUpdateMoqDTO,
     RequestSaveNeedOverrideDTO,
     RequestBulkSaveNeedOverrideDTO,
+    RequestSaveSalesOverrideDTO,
 } from "./recomendation-v2.schema.js";
 import { GetPagination } from "../../../lib/utils/pagination.js";
 import { ISSUANCE_THRESHOLD_PERIOD } from "../issuance/issuance.service.js";
@@ -372,7 +373,8 @@ export class RecomendationV2Service {
                              json_build_object(
                                  'month', ag.month,
                                  'year', ag.year,
-                                 'sales', ag.qty
+                                 'sales', ag.qty,
+                                 'override_sales', so.quantity
                              )
                         ), '[]'::json)
                         FROM (
@@ -395,6 +397,10 @@ export class RecomendationV2Service {
                             WHERE rec.raw_mat_id = fm.id
                             GROUP BY ag_sub.month, ag_sub.year
                         ) ag
+                        LEFT JOIN "raw_material_sales_overrides" so
+                             ON so.raw_material_id = fm.id
+                             AND so.month = ag.month
+                             AND so.year = ag.year
                     ) AS sales_data,
 
                     -- Periodical Forecast/Needs Data
@@ -522,7 +528,11 @@ export class RecomendationV2Service {
 
             const sales = salesPeriods.map((p) => {
                 const found = salesRaw.find((s: any) => s.month === p.month && s.year === p.year);
-                return { ...p, quantity: Number(found?.sales || 0) };
+                return {
+                    ...p,
+                    quantity: Number(found?.sales || 0),
+                    override_sales: found?.override_sales != null ? Number(found.override_sales) : null,
+                };
             });
 
             const needs = forecastPeriods.map((p) => {
@@ -682,6 +692,30 @@ export class RecomendationV2Service {
             where: { raw_material_id, month, year },
         });
         return { message: "Need override reset to system calculation" };
+    }
+
+    static async saveSalesOverride(body: RequestSaveSalesOverrideDTO) {
+        const { raw_material_id, month, year, quantity } = body;
+
+        return await prisma.rawMaterialSalesOverride.upsert({
+            where: {
+                raw_material_id_month_year: {
+                    raw_material_id,
+                    month,
+                    year,
+                },
+            },
+            update: { quantity },
+            create: { raw_material_id, month, year, quantity },
+        });
+    }
+
+    static async deleteSalesOverride(body: { raw_material_id: number; month: number; year: number }) {
+        const { raw_material_id, month, year } = body;
+        await prisma.rawMaterialSalesOverride.deleteMany({
+            where: { raw_material_id, month, year },
+        });
+        return { message: "Sales override reset to system calculation" };
     }
 
     static async saveOpenPo(body: RequestSaveOpenPoDTO) {

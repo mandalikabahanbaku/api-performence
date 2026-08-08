@@ -88,7 +88,8 @@ export const ResponseRecomendationV2Schema = z.object({
         month: z.number(),
         year: z.number(),
         key: z.string(),
-        quantity: z.number()
+        quantity: z.number(),
+        override_sales: z.number().nullable().optional()
     })).optional(),
     needs: z.array(z.object({
         month: z.number(),
@@ -140,3 +141,20 @@ export const RequestBulkSaveNeedOverrideSchema = z.object({
 });
 
 export type RequestBulkSaveNeedOverrideDTO = z.infer<typeof RequestBulkSaveNeedOverrideSchema>;
+
+export const RequestSaveSalesOverrideSchema = z.object({
+    raw_material_id: z.coerce.number(),
+    month: z.coerce.number().min(1).max(12),
+    year: z.coerce.number().min(2000),
+    quantity: z.coerce.number().min(0),
+});
+
+export type RequestSaveSalesOverrideDTO = z.infer<typeof RequestSaveSalesOverrideSchema>;
+
+export const RequestDeleteSalesOverrideSchema = z.object({
+    raw_material_id: z.coerce.number(),
+    month: z.coerce.number().min(1).max(12),
+    year: z.coerce.number().min(2000),
+});
+
+export type RequestDeleteSalesOverrideDTO = z.infer<typeof RequestDeleteSalesOverrideSchema>;

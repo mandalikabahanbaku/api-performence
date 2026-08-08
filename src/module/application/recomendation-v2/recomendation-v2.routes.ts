@@ -12,6 +12,8 @@ routes.post("/bulk-need-override", RecomendationV2Controller.bulkSaveNeedOverrid
 routes.post("/open-po", RecomendationV2Controller.saveOpenPo);
 routes.post("/need-override", RecomendationV2Controller.saveNeedOverride);
 routes.delete("/need-override", RecomendationV2Controller.deleteNeedOverride);
+routes.post("/sales-override", RecomendationV2Controller.saveSalesOverride);
+routes.delete("/sales-override", RecomendationV2Controller.deleteSalesOverride);
 routes.patch("/moq", RecomendationV2Controller.updateMoq);
 routes.delete("/:id", RecomendationV2Controller.destroyWorkOrder);
 
