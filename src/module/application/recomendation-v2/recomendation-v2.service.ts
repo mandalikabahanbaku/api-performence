@@ -369,12 +369,15 @@ export class RecomendationV2Service {
                     COALESCE(cms.current_month_sales, 0) as current_month_sales,
 
                     -- Historical Sales Data
+                    -- FULL JOIN so a locked/overridden period still shows up even if the
+                    -- live recipe-based computation no longer produces a row for it (e.g.
+                    -- the recipe was changed or deactivated after the value was locked).
                     (
                         SELECT COALESCE(json_agg(
                              json_build_object(
-                                 'month', ag.month,
-                                 'year', ag.year,
-                                 'sales', ag.qty,
+                                 'month', COALESCE(ag.month, so.month),
+                                 'year', COALESCE(ag.year, so.year),
+                                 'sales', COALESCE(ag.qty, 0),
                                  'override_sales', so.quantity,
                                  'locked', (so.locked_at IS NOT NULL)
                              )
@@ -399,9 +402,14 @@ export class RecomendationV2Service {
                             WHERE rec.raw_mat_id = fm.id
                             GROUP BY ag_sub.month, ag_sub.year
                         ) ag
-                        LEFT JOIN "raw_material_sales_overrides" so
-                             ON so.raw_material_id = fm.id
-                             AND so.month = ag.month
+                        FULL JOIN (
+                            SELECT month, year, quantity, locked_at
+                            FROM "raw_material_sales_overrides"
+                            WHERE raw_material_id = fm.id
+                              AND (year * 12 + month) >= ${slStartY * 12 + slStartM}
+                              AND (year * 12 + month) <= ${slEndY * 12 + slEndM}
+                        ) so
+                             ON so.month = ag.month
                              AND so.year = ag.year
                     ) AS sales_data,
 
