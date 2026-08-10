@@ -768,10 +768,11 @@ export class RecomendationV2Service {
         }
 
         // Eligibility is relative to the real calendar date, not the anchor month/year
-        // being viewed — a period only "closes" once it's actually in the past.
+        // being viewed — a period only "closes" once it's at least 2 months old
+        // (M-1 is still settling, so it stays editable/live for one more month).
         const realNow = new Date();
         const realKey = (realNow.getFullYear()) * 12 + (realNow.getMonth() + 1);
-        const eligible = salesPeriods.filter((p) => p.year * 12 + p.month < realKey);
+        const eligible = salesPeriods.filter((p) => p.year * 12 + p.month < realKey - 1);
 
         if (eligible.length === 0) {
             return { locked: 0, message: "Tidak ada periode lampau untuk dikunci." };
