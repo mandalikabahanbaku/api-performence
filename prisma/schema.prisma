@@ -833,6 +833,7 @@ model RawMaterialSalesOverride {
   month           Int         @db.SmallInt
   year            Int         @db.SmallInt
   quantity        Decimal     @db.Decimal(18, 2)
+  locked_at       DateTime?
   created_at      DateTime    @default(now())
   updated_at      DateTime    @updatedAt
   raw_material    RawMaterial @relation(fields: [raw_material_id], references: [id], onDelete: Cascade)

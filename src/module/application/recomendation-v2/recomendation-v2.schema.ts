@@ -89,7 +89,8 @@ export const ResponseRecomendationV2Schema = z.object({
         year: z.number(),
         key: z.string(),
         quantity: z.number(),
-        override_sales: z.number().nullable().optional()
+        override_sales: z.number().nullable().optional(),
+        locked: z.boolean().optional(),
     })).optional(),
     needs: z.array(z.object({
         month: z.number(),
@@ -158,3 +159,13 @@ export const RequestDeleteSalesOverrideSchema = z.object({
 });
 
 export type RequestDeleteSalesOverrideDTO = z.infer<typeof RequestDeleteSalesOverrideSchema>;
+
+export const RequestLockSalesHistorySchema = z.object({
+    type: z.enum(["ffo", "lokal", "impor"]).optional(),
+    month: z.coerce.number().int().min(1).max(12).optional(),
+    year: z.coerce.number().int().min(2000).max(2100).optional(),
+    sales_from_month: z.coerce.number().int().min(1).max(12).optional(),
+    sales_from_year: z.coerce.number().int().min(2000).max(2100).optional(),
+});
+
+export type RequestLockSalesHistoryDTO = z.infer<typeof RequestLockSalesHistorySchema>;

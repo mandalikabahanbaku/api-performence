@@ -14,6 +14,7 @@ routes.post("/need-override", RecomendationV2Controller.saveNeedOverride);
 routes.delete("/need-override", RecomendationV2Controller.deleteNeedOverride);
 routes.post("/sales-override", RecomendationV2Controller.saveSalesOverride);
 routes.delete("/sales-override", RecomendationV2Controller.deleteSalesOverride);
+routes.post("/lock-sales-history", RecomendationV2Controller.lockSalesHistory);
 routes.patch("/moq", RecomendationV2Controller.updateMoq);
 routes.delete("/:id", RecomendationV2Controller.destroyWorkOrder);
 

@@ -10,6 +10,7 @@ import {
     RequestSaveNeedOverrideDTO,
     RequestBulkSaveNeedOverrideDTO,
     RequestSaveSalesOverrideDTO,
+    RequestLockSalesHistoryDTO,
 } from "./recomendation-v2.schema.js";
 import { GetPagination } from "../../../lib/utils/pagination.js";
 import { ISSUANCE_THRESHOLD_PERIOD } from "../issuance/issuance.service.js";
@@ -374,7 +375,8 @@ export class RecomendationV2Service {
                                  'month', ag.month,
                                  'year', ag.year,
                                  'sales', ag.qty,
-                                 'override_sales', so.quantity
+                                 'override_sales', so.quantity,
+                                 'locked', (so.locked_at IS NOT NULL)
                              )
                         ), '[]'::json)
                         FROM (
@@ -532,6 +534,7 @@ export class RecomendationV2Service {
                     ...p,
                     quantity: Number(found?.sales || 0),
                     override_sales: found?.override_sales != null ? Number(found.override_sales) : null,
+                    locked: found?.locked === true,
                 };
             });
 
@@ -697,6 +700,8 @@ export class RecomendationV2Service {
     static async saveSalesOverride(body: RequestSaveSalesOverrideDTO) {
         const { raw_material_id, month, year, quantity } = body;
 
+        // A manual edit always supersedes a system lock — clear locked_at so the
+        // cell reads as a PIC override, not a frozen snapshot.
         return await prisma.rawMaterialSalesOverride.upsert({
             where: {
                 raw_material_id_month_year: {
@@ -705,7 +710,7 @@ export class RecomendationV2Service {
                     year,
                 },
             },
-            update: { quantity },
+            update: { quantity, locked_at: null },
             create: { raw_material_id, month, year, quantity },
         });
     }
@@ -716,6 +721,123 @@ export class RecomendationV2Service {
             where: { raw_material_id, month, year },
         });
         return { message: "Sales override reset to system calculation" };
+    }
+
+    /** Freeze the currently-computed Sales History for every material/month that's
+     *  already in the past (before real "now") and doesn't have an override yet.
+     *  Rows that already have an override (manual or previously locked) are left
+     *  untouched — locking never overwrites an existing value. */
+    static async lockSalesHistory(body: RequestLockSalesHistoryDTO) {
+        const { type, month, year, sales_from_month, sales_from_year } = body;
+
+        const now = new Date();
+        const currentMonth = month ?? now.getMonth() + 1;
+        const currentYear = year ?? now.getFullYear();
+        const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+        const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+
+        const DEFAULT_SALES_MONTHS = 3;
+        let salesFromMonth = sales_from_month;
+        let salesFromYear = sales_from_year;
+        if (salesFromMonth == null || salesFromYear == null) {
+            salesFromMonth = currentMonth;
+            salesFromYear = currentYear;
+            for (let i = 0; i < DEFAULT_SALES_MONTHS; i++) {
+                salesFromMonth -= 1;
+                if (salesFromMonth <= 0) {
+                    salesFromMonth += 12;
+                    salesFromYear -= 1;
+                }
+            }
+        }
+
+        const salesPeriods: { month: number; year: number }[] = [];
+        {
+            const endKey = prevYear * 12 + prevMonth;
+            let m = salesFromMonth;
+            let y = salesFromYear;
+            const MAX_RANGE_MONTHS = 60;
+            for (let i = 0; y * 12 + m <= endKey && i < MAX_RANGE_MONTHS; i++) {
+                salesPeriods.push({ month: m, year: y });
+                m += 1;
+                if (m > 12) {
+                    m = 1;
+                    y += 1;
+                }
+            }
+        }
+
+        // Eligibility is relative to the real calendar date, not the anchor month/year
+        // being viewed — a period only "closes" once it's actually in the past.
+        const realNow = new Date();
+        const realKey = (realNow.getFullYear()) * 12 + (realNow.getMonth() + 1);
+        const eligible = salesPeriods.filter((p) => p.year * 12 + p.month < realKey);
+
+        if (eligible.length === 0) {
+            return { locked: 0, message: "Tidak ada periode lampau untuk dikunci." };
+        }
+
+        const lockStart = eligible[0]!.year * 12 + eligible[0]!.month;
+        const lockEnd = eligible[eligible.length - 1]!.year * 12 + eligible[eligible.length - 1]!.month;
+
+        const typeFilter = (() => {
+            switch (type) {
+                case "ffo":
+                    return Prisma.sql`(rmc.slug ILIKE '%fragrance-oil%' OR rmc.slug ILIKE '%ffo%')`;
+                case "lokal":
+                    return Prisma.sql`(rmc.slug IS NULL OR rmc.slug NOT ILIKE '%fragrance-oil%') AND rm.source = 'LOCAL'`;
+                case "impor":
+                    return Prisma.sql`(rmc.slug IS NULL OR rmc.slug NOT ILIKE '%fragrance-oil%') AND rm.source = 'IMPORT'`;
+                default:
+                    return Prisma.sql`1=1`;
+            }
+        })();
+
+        const lockedAt = new Date();
+
+        const result = await prisma.$executeRaw`
+            WITH filtered_materials AS (
+                SELECT rm.id
+                FROM "raw_materials" rm
+                LEFT JOIN "raw_mat_categories" rmc ON rmc.id = rm.raw_mat_categories_id
+                WHERE ${typeFilter} AND rm.deleted_at IS NULL
+            ),
+            computed AS (
+                SELECT
+                    fm.id AS raw_material_id,
+                    ag_sub.month,
+                    ag_sub.year,
+                    SUM(FLOOR(ag_sub.total_month_qty * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)) AS quantity
+                FROM filtered_materials fm
+                JOIN "recipes" rec ON rec.raw_mat_id = fm.id AND rec.is_active = true
+                JOIN (
+                    SELECT product_id, year, month,
+                        COALESCE(
+                            NULLIF(SUM(CASE WHEN type = 'ALL' THEN quantity ELSE 0 END), 0),
+                            SUM(CASE WHEN type != 'ALL' THEN quantity ELSE 0 END),
+                            0
+                        ) as total_month_qty
+                    FROM "product_issuances"
+                    WHERE (year * 12 + month) >= ${lockStart} AND (year * 12 + month) <= ${lockEnd}
+                    GROUP BY product_id, year, month
+                ) ag_sub ON ag_sub.product_id = rec.product_id
+                GROUP BY fm.id, ag_sub.month, ag_sub.year
+            )
+            INSERT INTO "raw_material_sales_overrides" (raw_material_id, month, year, quantity, locked_at, created_at, updated_at)
+            SELECT c.raw_material_id, c.month, c.year, c.quantity, ${lockedAt}, ${lockedAt}, ${lockedAt}
+            FROM computed c
+            WHERE NOT EXISTS (
+                SELECT 1 FROM "raw_material_sales_overrides" so
+                WHERE so.raw_material_id = c.raw_material_id AND so.month = c.month AND so.year = c.year
+            )
+            ON CONFLICT (raw_material_id, month, year) DO NOTHING
+        `;
+
+        return {
+            locked: Number(result),
+            periods: eligible.map((p) => ({ month: p.month, year: p.year, key: `${p.month}-${p.year}` })),
+            message: `${Number(result)} data sales history berhasil dikunci.`,
+        };
     }
 
     static async saveOpenPo(body: RequestSaveOpenPoDTO) {

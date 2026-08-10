@@ -13,6 +13,7 @@ import {
     RequestBulkSaveNeedOverrideSchema,
     RequestSaveSalesOverrideSchema,
     RequestDeleteSalesOverrideSchema,
+    RequestLockSalesHistorySchema,
 } from "./recomendation-v2.schema.js";
 
 export class RecomendationV2Controller {
@@ -140,6 +141,13 @@ export class RecomendationV2Controller {
         const body = await c.req.json();
         const validBody = RequestDeleteSalesOverrideSchema.parse(body);
         const result = await RecomendationV2Service.deleteSalesOverride(validBody);
+        return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async lockSalesHistory(c: Context) {
+        const body = await c.req.json();
+        const validBody = RequestLockSalesHistorySchema.parse(body);
+        const result = await RecomendationV2Service.lockSalesHistory(validBody);
         return ApiResponse.sendSuccess(c, result, 200);
     }
 }
