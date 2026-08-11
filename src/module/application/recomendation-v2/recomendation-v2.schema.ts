@@ -48,6 +48,8 @@ export const RequestBulkSaveHorizonSchema = z.object({
     horizon: z.coerce.number().min(1).max(12).default(3),
     type: z.enum(["ffo", "lokal", "impor"]).optional(),
     ids: z.array(z.coerce.number()).optional(),
+    sales_from_month: z.coerce.number().min(1).max(12).optional(),
+    sales_from_year: z.coerce.number().min(2000).optional(),
 });
 
 export type RequestBulkSaveHorizonDTO = z.infer<typeof RequestBulkSaveHorizonSchema>;

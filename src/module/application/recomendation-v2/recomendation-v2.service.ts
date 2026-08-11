@@ -14,7 +14,28 @@ import {
 } from "./recomendation-v2.schema.js";
 import { GetPagination } from "../../../lib/utils/pagination.js";
 import { ISSUANCE_THRESHOLD_PERIOD } from "../issuance/issuance.service.js";
+import { runForecastEngine } from "../forecast/engines.js";
 import ExcelJS from "exceljs";
+
+type MaterialSalesHistory = {
+    quantity: number;
+    override_sales?: number | null;
+    locked?: boolean;
+};
+
+export function forecastLockedMaterialSales(
+    sales: MaterialSalesHistory[],
+    horizon: number,
+): number[] | null {
+    if (!sales.some((item) => item.locked === true)) return null;
+
+    const history = sales.map((item) => Number(item.override_sales ?? item.quantity ?? 0));
+    const firstNonZero = history.findIndex((quantity) => quantity > 0);
+    const effectiveHistory = firstNonZero >= 0 ? history.slice(firstNonZero) : history;
+    const { forecasted } = runForecastEngine("AUTO", effectiveHistory, horizon);
+
+    return forecasted.map((quantity) => Math.floor(Math.max(0, Number(quantity) || 0)));
+}
 
 export class RecomendationV2Service {
     static async list(query: QueryRecomendationV2DTO) {
@@ -546,11 +567,12 @@ export class RecomendationV2Service {
                 };
             });
 
-            const needs = forecastPeriods.map((p) => {
+            const lockedSalesForecast = forecastLockedMaterialSales(sales, forecastPeriods.length);
+            const needs = forecastPeriods.map((p, index) => {
                 const found = needsRaw.find((n: any) => n.month === p.month && n.year === p.year);
                 return { 
                     ...p, 
-                    quantity: Number(found?.needs || 0),
+                    quantity: lockedSalesForecast?.[index] ?? Number(found?.needs || 0),
                     override_needs: found?.override_needs != null ? Number(found.override_needs) : null
                 };
             });
@@ -566,6 +588,17 @@ export class RecomendationV2Service {
                     : r.work_order_data;
 
             const horizon = workOrder?.horizon || 0;
+            const totalNeededHorizon = horizon > 0
+                ? needs
+                      .slice(0, horizon)
+                      .reduce((total, need) => total + (need.override_needs ?? need.quantity), 0)
+                : 0;
+            const recommendationQuantity = horizon > 0
+                ? Math.max(
+                      0,
+                      totalNeededHorizon + Number(r.safety_stock_x_resep) - Number(r.current_stock) - Number(r.open_po),
+                  )
+                : 0;
 
             return {
                 ranking: Number(r.ranking),
@@ -581,8 +614,13 @@ export class RecomendationV2Service {
                 stock_fg_x_resep: Number(r.stock_fg_x_resep),
                 safety_stock_x_resep: Number(r.safety_stock_x_resep),
                 forecast_needed: Number(r.forecast_needed),
-                total_needed_horizon: Number(r.total_forecast_horizon_dynamic),
-                recommendation_quantity: Number(r.recommendation_quantity),
+                total_needed_horizon: lockedSalesForecast
+                    ? totalNeededHorizon
+                    : Number(r.total_forecast_horizon_dynamic),
+                recommendation_quantity: lockedSalesForecast
+                    ? recommendationQuantity
+                    : Number(r.recommendation_quantity),
+                uses_locked_sales: lockedSalesForecast !== null,
 
                 // Work Order / Consolidation data
                 work_order_id: workOrder?.id || null,
@@ -948,7 +986,7 @@ export class RecomendationV2Service {
     }
 
     static async bulkSaveHorizon(body: RequestBulkSaveHorizonDTO) {
-        const { month, year, horizon, type, ids } = body;
+        const { month, year, horizon, type, ids, sales_from_month, sales_from_year } = body;
 
         const typeFilter = (() => {
             switch (type) {
@@ -1024,7 +1062,7 @@ export class RecomendationV2Service {
         const bssEnd = bssEndY * 12 + bssEndM;
 
         // Secure Bulk Upsert using CTEs to pre-compute each aggregation once per material
-        return await prisma.$executeRaw`
+        const affected = await prisma.$executeRaw`
             WITH
                 po_agg AS (
                     SELECT raw_material_id, SUM(quantity)::numeric AS total
@@ -1140,6 +1178,45 @@ export class RecomendationV2Service {
                 safety_stock_x_resep = EXCLUDED.safety_stock_x_resep,
                 updated_at = EXCLUDED.updated_at;
         `;
+
+        const { data } = await this.list({
+            page: 1,
+            take: 1000000,
+            month,
+            year,
+            type,
+            forecast_months: horizon,
+            po_months: 3,
+            sales_from_month,
+            sales_from_year,
+        });
+        const idSet = ids?.length ? new Set(ids) : null;
+        const lockedRows = data.filter(
+            (row: any) => row.uses_locked_sales && (!idSet || idSet.has(row.material_id)),
+        );
+
+        if (lockedRows.length > 0) {
+            await prisma.$transaction(
+                lockedRows.map((row: any) =>
+                    prisma.materialPurchaseDraft.update({
+                        where: {
+                            raw_mat_id_month_year: {
+                                raw_mat_id: row.material_id,
+                                month,
+                                year,
+                            },
+                        },
+                        data: {
+                            total_needed: row.total_needed_horizon,
+                            quantity: row.recommendation_quantity,
+                            updated_at: now,
+                        },
+                    }),
+                ),
+            );
+        }
+
+        return affected;
     }
 
     static async export(query: QueryRecomendationV2DTO) {
@@ -1291,7 +1368,7 @@ export class RecomendationV2Service {
 
             // Map Sales
             row.sales?.forEach((s: any) => {
-                formattedRow[`sales_${s.key}`] = Math.round(s.quantity || 0);
+                formattedRow[`sales_${s.key}`] = Math.round(s.override_sales ?? s.quantity ?? 0);
             });
 
             // Map Needs
