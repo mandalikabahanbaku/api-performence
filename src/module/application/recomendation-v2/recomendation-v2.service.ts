@@ -650,7 +650,7 @@ export class RecomendationV2Service {
                 work_order_horizon: horizon || null,
 
                 sales,
-                needs: needs.slice(0, Math.max(forecastPeriods.length, horizon)),
+                needs,
                 open_pos,
             };
         });
@@ -1211,13 +1211,13 @@ export class RecomendationV2Service {
             sales_from_year,
         });
         const idSet = ids?.length ? new Set(ids) : null;
-        const lockedRows = data.filter(
-            (row: any) => row.uses_locked_sales && (!idSet || idSet.has(row.material_id)),
+        const selectedRows = data.filter(
+            (row) => row.work_order_horizon === horizon && (!idSet || idSet.has(row.material_id)),
         );
 
-        if (lockedRows.length > 0) {
+        if (selectedRows.length > 0) {
             await prisma.$transaction(
-                lockedRows.map((row: any) =>
+                selectedRows.map((row) =>
                     prisma.materialPurchaseDraft.update({
                         where: {
                             raw_mat_id_month_year: {
@@ -1229,6 +1229,9 @@ export class RecomendationV2Service {
                         data: {
                             total_needed: row.total_needed_horizon,
                             quantity: row.recommendation_quantity,
+                            current_stock: row.current_stock,
+                            stock_fg_x_resep: row.stock_fg_x_resep,
+                            safety_stock_x_resep: row.safety_stock_x_resep,
                             updated_at: now,
                         },
                     }),

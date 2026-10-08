@@ -22,7 +22,7 @@ describe("Need Buy overrides across recommendation types", () => {
             type, month: 12, year: 2026, page: 1, take: 50,
             forecast_months: 2, po_months: 2,
         });
-        expect(result.data[0]!.needs?.map(n => n.override_needs)).toEqual([75, 0]);
+        expect(result.data[0]!.needs?.slice(0, 2).map(n => n.override_needs)).toEqual([75, 0]);
         expect(result.data[0]!.total_needed_horizon).toBe(75);
         expect(result.data[0]!.recommendation_quantity).toBe(75);
         const sql = (raw.mock.calls[1]![0] as unknown as TemplateStringsArray).join(" ");
@@ -51,13 +51,13 @@ describe("Need Buy overrides across recommendation types", () => {
             type: "ffo", month: 12, year: 2026, page: 1, take: 50,
             forecast_months: 1, po_months: 2,
         });
-        expect(result.data[0]!.needs).toHaveLength(2);
+        expect(result.data[0]!.needs).toHaveLength(12);
         expect(result.data[0]!.total_needed_horizon).toBe(100);
         expect(result.data[0]!.recommendation_quantity).toBe(105);
         expect(result.data[0]!.work_order_quantity).toBe(0);
     });
 
-    it("recommends 4002 when overridden needs total 5100 and ready stock is 1098", async () => {
+    it.each([{ horizon: 3, total: 3800, buy: 2702 }, { horizon: 4, total: 5100, buy: 4002 }])("uses exactly $horizon months: total $total, buy $buy", async ({ horizon, total, buy }) => {
         vi.spyOn(prisma, "$queryRaw")
             .mockResolvedValueOnce([])
             .mockResolvedValueOnce([{
@@ -70,15 +70,39 @@ describe("Need Buy overrides across recommendation types", () => {
                     year: index < 3 ? 2026 : 2027,
                     needs: 9999, override_needs: quantity,
                 })),
-                sales_data: [], po_data: [], work_order_data: { horizon: 4 },
+                sales_data: [], po_data: [], work_order_data: { horizon },
             }])
             .mockResolvedValueOnce([{ count: 1 }]);
         const result = await RecomendationV2Service.list({
             type: "ffo", month: 10, year: 2026, page: 1, take: 50,
             forecast_months: 4, po_months: 2,
         });
-        expect(result.data[0]!.total_needed_horizon).toBe(5100);
-        expect(result.data[0]!.recommendation_quantity).toBe(4002);
+        expect(result.data[0]!.total_needed_horizon).toBe(total);
+        expect(result.data[0]!.recommendation_quantity).toBe(buy);
+    });
+
+    it.each([
+        { horizon: null, stock: 10, override: 75, total: 0 },
+        { horizon: 1, stock: 100, override: 75, total: 75 },
+        { horizon: 1, stock: 0, override: 0, total: 0 },
+    ])("handles missing horizon, sufficient stock and zero override: %j", async ({ horizon, stock, override, total }) => {
+        vi.spyOn(prisma, "$queryRaw")
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([{
+                material_id: 1, ranking: 1, current_stock: stock, open_po: 0,
+                stock_fg_x_resep: 0, safety_stock_x_resep: 0,
+                forecast_needed: 999, total_forecast_horizon_dynamic: 999,
+                recommendation_quantity: 999,
+                needs_data: [{ month: 10, year: 2026, needs: 999, override_needs: override }],
+                sales_data: [], po_data: [], work_order_data: { horizon },
+            }])
+            .mockResolvedValueOnce([{ count: 1 }]);
+        const result = await RecomendationV2Service.list({
+            type: "ffo", month: 10, year: 2026, page: 1, take: 50,
+            forecast_months: 4, po_months: 2,
+        });
+        expect(result.data[0]!.total_needed_horizon).toBe(total);
+        expect(result.data[0]!.recommendation_quantity).toBe(0);
     });
 
 });
