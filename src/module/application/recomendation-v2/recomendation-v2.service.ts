@@ -358,7 +358,7 @@ export class RecomendationV2Service {
                     COALESCE((
                         SELECT SUM(po.quantity)
                         FROM "raw_material_open_pos" po
-                        WHERE po.raw_material_id = fm.id AND po.status != 'RECEIVED'
+                        WHERE po.raw_material_id = fm.id AND po.status NOT IN ('RECEIVED', 'CANCELLED')
                     ), 0) AS open_po,
 
                     -- Open PO per month
@@ -376,7 +376,7 @@ export class RecomendationV2Service {
                                 EXTRACT(YEAR FROM po.order_date)::int as y,
                                 SUM(po.quantity) as qty
                             FROM "raw_material_open_pos" po
-                            WHERE po.raw_material_id = fm.id AND po.status != 'RECEIVED'
+                            WHERE po.raw_material_id = fm.id AND po.status NOT IN ('RECEIVED', 'CANCELLED')
                             GROUP BY 1, 2
                         ) p_data
                     ) AS po_data,
@@ -461,7 +461,7 @@ export class RecomendationV2Service {
                             ) pi_fg2 ON pi_fg2.product_id = f.product_id
                             WHERE rec.raw_mat_id = fm.id
                               AND (f.year * 12 + f.month) >= ${fcStartY * 12 + fcStartM}
-                              AND (f.year * 12 + f.month) <= ${fcEndY * 12 + fcEndM}
+                              AND (f.year * 12 + f.month) <= ${currentYear * 12 + currentMonth + 11}
                             GROUP BY f.month, f.year
                         ) mr
                         FULL JOIN (
@@ -469,8 +469,7 @@ export class RecomendationV2Service {
                             FROM "raw_material_need_overrides"
                             WHERE raw_material_id = fm.id
                               AND (year * 12 + month) >= ${fcStart}
-                              AND (year * 12 + month) <= ${fcEnd}
-                              AND ${forecast_months} > 0
+                              AND (year * 12 + month) <= ${currentYear * 12 + currentMonth + 11}
                         ) o ON o.month = mr.month AND o.year = mr.year
                     ) AS needs_data,
 
@@ -585,8 +584,15 @@ export class RecomendationV2Service {
                 };
             });
 
-            const lockedSalesForecast = forecastLockedMaterialSales(sales, forecastPeriods.length);
-            const needs = forecastPeriods.map((p, index) => {
+            // Calculation covers the full work-order horizon, independently of visible columns.
+            const calculationPeriods = Array.from({ length: 12 }, (_, index) => {
+                const date = new Date(currentYear, currentMonth - 1 + index, 1);
+                const month = date.getMonth() + 1;
+                const year = date.getFullYear();
+                return { month, year, key: `${month}-${year}` };
+            });
+            const lockedSalesForecast = forecastLockedMaterialSales(sales, calculationPeriods.length);
+            const needs = calculationPeriods.map((p, index) => {
                 const found = needsRaw.find((n: any) => n.month === p.month && n.year === p.year);
                 return { 
                     ...p, 
@@ -644,11 +650,11 @@ export class RecomendationV2Service {
                 work_order_id: workOrder?.id || null,
                 work_order_status: workOrder?.status || null,
                 work_order_pic_id: workOrder?.pic_id || null,
-                work_order_quantity: workOrder?.quantity ? Number(workOrder.quantity) : null,
+                work_order_quantity: workOrder?.quantity != null ? Number(workOrder.quantity) : null,
                 work_order_horizon: horizon || null,
 
                 sales,
-                needs,
+                needs: needs.slice(0, forecastPeriods.length),
                 open_pos,
             };
         });
@@ -1362,13 +1368,7 @@ export class RecomendationV2Service {
 
             // Calculate total need based on horizon (Only if set by PIC)
             const h = row.work_order_horizon || 0;
-            const hasNeeds = row.needs && row.needs.length > 0;
-            const totalNeeded =
-                h > 0 && hasNeeds
-                    ? (row.needs || [])
-                          .slice(0, h)
-                          .reduce((sum: number, n: any) => sum + (n.override_needs ?? n.quantity ?? 0), 0)
-                    : null;
+            const totalNeeded = h > 0 ? row.total_needed_horizon : null;
 
             const formattedRow: any = {
                 ...row,

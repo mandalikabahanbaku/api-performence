@@ -30,5 +30,31 @@ describe("Need Buy overrides across recommendation types", () => {
         expect(sql).toContain("COALESCE(mr.month, o.month)");
         expect(sql).toContain("rec.raw_mat_id = fm.id AND rec.is_active = true");
         expect(sql).toContain("COALESCE(pi_h.total_qty, 0)");
+        expect(sql).not.toContain("po.status != 'RECEIVED'");
+        expect(sql.match(/po.status NOT IN \('RECEIVED', 'CANCELLED'\)/g)).toHaveLength(2);
     });
+    it("calculates locked sales for the full horizon even when only one month is visible", async () => {
+        vi.spyOn(prisma, "$queryRaw")
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([{
+                material_id: 1, ranking: 1, current_stock: 10, open_po: 5,
+                stock_fg_x_resep: 0, safety_stock_x_resep: 20,
+                forecast_needed: 0, total_forecast_horizon_dynamic: 999,
+                recommendation_quantity: 999,
+                needs_data: [{ month: 12, year: 2026, override_needs: 75 },
+                    { month: 1, year: 2027, override_needs: 25 }],
+                sales_data: [{ month: 11, year: 2026, sales: 100, override_sales: 100, locked: true }],
+                po_data: [], work_order_data: { horizon: 2, quantity: 0 },
+            }])
+            .mockResolvedValueOnce([{ count: 1 }]);
+        const result = await RecomendationV2Service.list({
+            type: "ffo", month: 12, year: 2026, page: 1, take: 50,
+            forecast_months: 1, po_months: 2,
+        });
+        expect(result.data[0]!.needs).toHaveLength(1);
+        expect(result.data[0]!.total_needed_horizon).toBe(100);
+        expect(result.data[0]!.recommendation_quantity).toBe(105);
+        expect(result.data[0]!.work_order_quantity).toBe(0);
+    });
+
 });
