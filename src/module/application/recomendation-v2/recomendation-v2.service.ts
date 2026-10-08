@@ -113,9 +113,9 @@ export class RecomendationV2Service {
                 case "ffo":
                     return Prisma.sql`(rmc.slug ILIKE '%fragrance-oil%' OR rmc.slug ILIKE '%ffo%')`;
                 case "lokal":
-                    return Prisma.sql`(rmc.slug IS NULL OR rmc.slug NOT ILIKE '%fragrance-oil%') AND rm.source = 'LOCAL'`;
+                    return Prisma.sql`(rmc.slug IS NULL OR (rmc.slug NOT ILIKE '%fragrance-oil%' AND rmc.slug NOT ILIKE '%ffo%')) AND rm.source = 'LOCAL'`;
                 case "impor":
-                    return Prisma.sql`(rmc.slug IS NULL OR rmc.slug NOT ILIKE '%fragrance-oil%') AND rm.source = 'IMPORT'`;
+                    return Prisma.sql`(rmc.slug IS NULL OR (rmc.slug NOT ILIKE '%fragrance-oil%' AND rmc.slug NOT ILIKE '%ffo%')) AND rm.source = 'IMPORT'`;
                 default:
                     return Prisma.sql`1=1`;
             }
@@ -438,9 +438,9 @@ export class RecomendationV2Service {
                     (
                         SELECT COALESCE(json_agg(
                              json_build_object(
-                                 'month', mr.month,
-                                 'year', mr.year,
-                                 'needs', mr.total_needed,
+                                 'month', COALESCE(mr.month, o.month),
+                                 'year', COALESCE(mr.year, o.year),
+                                 'needs', COALESCE(mr.total_needed, 0),
                                  'override_needs', o.quantity
                              )
                         ), '[]'::json)
@@ -464,10 +464,14 @@ export class RecomendationV2Service {
                               AND (f.year * 12 + f.month) <= ${fcEndY * 12 + fcEndM}
                             GROUP BY f.month, f.year
                         ) mr
-                        LEFT JOIN "raw_material_need_overrides" o 
-                             ON o.raw_material_id = fm.id 
-                             AND o.month = mr.month 
-                             AND o.year = mr.year
+                        FULL JOIN (
+                            SELECT month, year, quantity
+                            FROM "raw_material_need_overrides"
+                            WHERE raw_material_id = fm.id
+                              AND (year * 12 + month) >= ${fcStart}
+                              AND (year * 12 + month) <= ${fcEnd}
+                              AND ${forecast_months} > 0
+                        ) o ON o.month = mr.month AND o.year = mr.year
                     ) AS needs_data,
 
                     -- Work Order Info
@@ -492,22 +496,36 @@ export class RecomendationV2Service {
                     AND mro.month = ${currentMonth} 
                     AND mro.year = ${currentYear}
                 LEFT JOIN LATERAL (
-                    SELECT COALESCE(SUM(COALESCE(o.quantity, mr.calc_needed)), 0) AS total_needed
+                    SELECT COALESCE(SUM(COALESCE(o.quantity, mr.calc_needed, 0)), 0) AS total_needed
                     FROM (
-                        SELECT f.month, f.year, SUM(FLOOR(f.base_forecast * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
+                        SELECT f.month, f.year, SUM(FLOOR(
+                            CASE WHEN f.month = ${currentMonth} AND f.year = ${currentYear}
+                            THEN GREATEST(0, f.base_forecast - COALESCE(pi_h.total_qty, 0))
+                            ELSE f.base_forecast END
+                            * rec.quantity * CASE WHEN rec.use_size_calc THEN 100 ELSE 1 END)
                         ) as calc_needed
                         FROM "recipes" rec
                         JOIN "forecasts" f ON f.product_id = rec.product_id
-                        WHERE rec.raw_mat_id = fm.id
+                        LEFT JOIN (
+                            SELECT product_id, SUM(quantity) AS total_qty
+                            FROM "product_inventories"
+                            WHERE month = ${fgInvMonth} AND year = ${fgInvYear}
+                            GROUP BY product_id
+                        ) pi_h ON pi_h.product_id = f.product_id
+                        WHERE rec.raw_mat_id = fm.id AND rec.is_active = true
                           AND mro.horizon IS NOT NULL
                           AND (f.year * 12 + f.month) >= ${currentYear * 12 + currentMonth}
                           AND (f.year * 12 + f.month) <= (${currentYear} * 12 + ${currentMonth} + COALESCE(mro.horizon, 0) - 1)
                         GROUP BY f.month, f.year
                     ) mr
-                    LEFT JOIN "raw_material_need_overrides" o 
-                         ON o.raw_material_id = fm.id 
-                         AND o.month = mr.month 
-                         AND o.year = mr.year
+                    FULL JOIN (
+                        SELECT month, year, quantity
+                        FROM "raw_material_need_overrides"
+                        WHERE raw_material_id = fm.id
+                          AND mro.horizon IS NOT NULL
+                          AND (year * 12 + month) >= ${currentYear * 12 + currentMonth}
+                          AND (year * 12 + month) <= (${currentYear * 12 + currentMonth} + mro.horizon - 1)
+                    ) o ON o.month = mr.month AND o.year = mr.year
                 ) h_fc ON TRUE
                 LEFT JOIN rm_current_sales_agg fa_sales ON fa_sales.raw_mat_id = fm.id
                 LEFT JOIN rm_forecast_agg fa ON fa.raw_mat_id = fm.id
@@ -832,9 +850,9 @@ export class RecomendationV2Service {
                 case "ffo":
                     return Prisma.sql`(rmc.slug ILIKE '%fragrance-oil%' OR rmc.slug ILIKE '%ffo%')`;
                 case "lokal":
-                    return Prisma.sql`(rmc.slug IS NULL OR rmc.slug NOT ILIKE '%fragrance-oil%') AND rm.source = 'LOCAL'`;
+                    return Prisma.sql`(rmc.slug IS NULL OR (rmc.slug NOT ILIKE '%fragrance-oil%' AND rmc.slug NOT ILIKE '%ffo%')) AND rm.source = 'LOCAL'`;
                 case "impor":
-                    return Prisma.sql`(rmc.slug IS NULL OR rmc.slug NOT ILIKE '%fragrance-oil%') AND rm.source = 'IMPORT'`;
+                    return Prisma.sql`(rmc.slug IS NULL OR (rmc.slug NOT ILIKE '%fragrance-oil%' AND rmc.slug NOT ILIKE '%ffo%')) AND rm.source = 'IMPORT'`;
                 default:
                     return Prisma.sql`1=1`;
             }
@@ -993,9 +1011,9 @@ export class RecomendationV2Service {
                 case "ffo":
                     return Prisma.sql`(rmc.slug ILIKE '%fragrance-oil%' OR rmc.slug ILIKE '%ffo%')`;
                 case "lokal":
-                    return Prisma.sql`(rmc.slug IS NULL OR rmc.slug NOT ILIKE '%fragrance-oil%') AND rm.source = 'LOCAL'`;
+                    return Prisma.sql`(rmc.slug IS NULL OR (rmc.slug NOT ILIKE '%fragrance-oil%' AND rmc.slug NOT ILIKE '%ffo%')) AND rm.source = 'LOCAL'`;
                 case "impor":
-                    return Prisma.sql`(rmc.slug IS NULL OR rmc.slug NOT ILIKE '%fragrance-oil%') AND rm.source = 'IMPORT'`;
+                    return Prisma.sql`(rmc.slug IS NULL OR (rmc.slug NOT ILIKE '%fragrance-oil%' AND rmc.slug NOT ILIKE '%ffo%')) AND rm.source = 'IMPORT'`;
                 default:
                     return Prisma.sql`1=1`;
             }
