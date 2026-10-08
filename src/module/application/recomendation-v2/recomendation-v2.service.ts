@@ -638,12 +638,8 @@ export class RecomendationV2Service {
                 stock_fg_x_resep: Number(r.stock_fg_x_resep),
                 safety_stock_x_resep: Number(r.safety_stock_x_resep),
                 forecast_needed: Number(r.forecast_needed),
-                total_needed_horizon: lockedSalesForecast
-                    ? totalNeededHorizon
-                    : Number(r.total_forecast_horizon_dynamic),
-                recommendation_quantity: lockedSalesForecast
-                    ? recommendationQuantity
-                    : Number(r.recommendation_quantity),
+                total_needed_horizon: totalNeededHorizon,
+                recommendation_quantity: recommendationQuantity,
                 uses_locked_sales: lockedSalesForecast !== null,
 
                 // Work Order / Consolidation data
@@ -654,7 +650,7 @@ export class RecomendationV2Service {
                 work_order_horizon: horizon || null,
 
                 sales,
-                needs: needs.slice(0, forecastPeriods.length),
+                needs: needs.slice(0, Math.max(forecastPeriods.length, horizon)),
                 open_pos,
             };
         });
