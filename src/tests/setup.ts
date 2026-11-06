@@ -61,6 +61,12 @@ vi.mock("../config/prisma.js", () => ({
                     recipes: []
                 };
             }),
+            findUniqueOrThrow: vi.fn().mockImplementation(async ({ where }) => ({
+                id: where.id || 1,
+                code: "TSHIRT",
+                name: "T-Shirt",
+                product_type: { id: 1, name: "Apparel", slug: "apparel" },
+            })),
             findFirst: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockResolvedValue({ id: 1, z_value: 1.65 }),
             update: vi.fn().mockResolvedValue({ id: 1, z_value: 1.65 }),
@@ -288,6 +294,15 @@ vi.mock("../config/prisma.js", () => ({
                 month: 1,
                 year: 2025,
                 quantity: 200,
+                created_at: new Date(),
+                updated_at: new Date(),
+            }),
+            upsert: vi.fn().mockResolvedValue({
+                id: 1,
+                product_id: 1,
+                month: 1,
+                year: 2025,
+                quantity: 150,
                 created_at: new Date(),
                 updated_at: new Date(),
             }),

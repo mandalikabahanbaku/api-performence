@@ -10,7 +10,7 @@ export class IssuanceController {
         return ApiResponse.sendSuccess(c, undefined, 200);
     }
 
-    static async list(c: Context) {
+    private static parseListQuery(c: Context): QueryIssuanceDTO {
         const {
             product_id,
             product_id_2,
@@ -26,7 +26,7 @@ export class IssuanceController {
             type,
         } = c.req.query();
 
-        const params: QueryIssuanceDTO = {
+        return {
             sortBy: (sortBy as QueryIssuanceDTO["sortBy"]) || "name",
             sortOrder: (sortOrder as QueryIssuanceDTO["sortOrder"]) || "desc",
             gender: (gender as QueryIssuanceDTO["gender"]) || undefined,
@@ -40,8 +40,10 @@ export class IssuanceController {
             take: take ? Number(take) : 10,
             type: (type as QueryIssuanceDTO["type"]) || undefined,
         };
+    }
 
-        const result = await IssuanceService.list(params);
+    static async list(c: Context) {
+        const result = await IssuanceService.list(IssuanceController.parseListQuery(c));
         return ApiResponse.sendSuccess(c, result, 200);
     }
 
@@ -57,7 +59,7 @@ export class IssuanceController {
         return ApiResponse.sendSuccess(c, data, 200);
     }
 
-    static async rekap(c: Context) {
+    private static parseRekapQuery(c: Context): QueryIssuanceRekapDTO {
         const {
             year,
             month,
@@ -71,7 +73,7 @@ export class IssuanceController {
             sortOrder,
         } = c.req.query();
 
-        const params: QueryIssuanceRekapDTO = {
+        return {
             year: year ? Number(year) : undefined,
             month: month ? Number(month) : undefined,
             search: search || undefined,
@@ -83,8 +85,26 @@ export class IssuanceController {
             sortBy: (sortBy as QueryIssuanceRekapDTO["sortBy"]) || "name",
             sortOrder: (sortOrder as QueryIssuanceRekapDTO["sortOrder"]) || "asc",
         };
+    }
 
-        const result = await IssuanceService.rekap(params);
+    static async rekap(c: Context) {
+        const result = await IssuanceService.rekap(IssuanceController.parseRekapQuery(c));
         return ApiResponse.sendSuccess(c, result, 200);
+    }
+
+    static async export(c: Context) {
+        const buffer = await IssuanceService.export(IssuanceController.parseListQuery(c));
+
+        c.header("Content-Type", "text/csv");
+        c.header("Content-Disposition", `attachment; filename="data-pengeluaran.csv"`);
+        return c.body(buffer as any);
+    }
+
+    static async exportRekap(c: Context) {
+        const buffer = await IssuanceService.exportRekap(IssuanceController.parseRekapQuery(c));
+
+        c.header("Content-Type", "text/csv");
+        c.header("Content-Disposition", `attachment; filename="rekap-pengeluaran.csv"`);
+        return c.body(buffer as any);
     }
 }

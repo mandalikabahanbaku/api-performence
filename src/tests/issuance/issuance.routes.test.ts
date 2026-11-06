@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import app from "../../app.js";
 import prisma from "../../config/prisma.js";
+import { Decimal } from "@prisma/client/runtime/library";
 
 vi.mock("../../config/redis.js", () => {
     const mockRedis = {
@@ -30,22 +31,6 @@ vi.mock("hono/cookie", async (importOriginal) => {
 vi.mock("../../middleware/csrf.js", () => ({
     csrfMiddleware: async (c: any, next: any) => await next(),
 }));
-
-const mockIssuanceDetail = {
-    id: 1,
-    product_id: 1,
-    month: 3,
-    year: 2025,
-    quantity: "150",
-    created_at: new Date(),
-    updated_at: new Date(),
-    product: {
-        id: 1,
-        code: "TSHIRT",
-        name: "T-Shirt",
-        product_type: { id: 1, name: "Apparel", slug: "apparel" },
-    },
-};
 
 describe("IssuanceRoutes", () => {
     beforeEach(() => {
@@ -142,26 +127,47 @@ describe("IssuanceRoutes", () => {
 
     describe("GET /api/app/product-issuance/:product_id", () => {
         it("should return 200 with issuance detail", async () => {
-            // @ts-ignore
-            prisma.productIssuance.findUnique.mockResolvedValue(mockIssuanceDetail);
+            (prisma.$queryRaw as any).mockResolvedValueOnce([{ others_sum: 150, all_val: 0, last_id: 1 }]);
 
             const res = await app.request("/api/app/product-issuance/1?year=2025&month=3", { method: "GET" });
             const body = await res.json();
 
             expect(res.status).toBe(200);
             expect(body.status).toBe("success");
-            expect(body.data).toBeDefined();
+            expect(body.data.quantity).toBe(150);
+            expect(body.data.product.code).toBe("TSHIRT");
         });
 
         it("should return 404 if issuance not found", async () => {
-            // @ts-ignore
-            prisma.productIssuance.findUnique.mockResolvedValue(null);
+            (prisma.$queryRaw as any).mockResolvedValueOnce([{ others_sum: 0, all_val: 0, last_id: null }]);
 
-            const res = await app.request("/api/app/product-issuance/999?year=9999&month=99", { method: "GET" });
+            const res = await app.request("/api/app/product-issuance/999?year=2025&month=3", { method: "GET" });
             const body = await res.json();
 
             expect(res.status).toBe(404);
             expect(body.success).toBe(false);
+        });
+
+        it("should return 404 if the SUM values are Prisma Decimal zero", async () => {
+            (prisma.$queryRaw as any).mockResolvedValueOnce([
+                { others_sum: new Decimal("0"), all_val: new Decimal("0"), last_id: null },
+            ]);
+
+            const res = await app.request("/api/app/product-issuance/1?year=2025&month=3", { method: "GET" });
+
+            expect(res.status).toBe(404);
+        });
+
+        it("should return the Decimal quantity as a number", async () => {
+            (prisma.$queryRaw as any).mockResolvedValueOnce([
+                { others_sum: new Decimal("0"), all_val: new Decimal("150.50"), last_id: 1 },
+            ]);
+
+            const res = await app.request("/api/app/product-issuance/1?year=2025&month=3", { method: "GET" });
+            const body = await res.json();
+
+            expect(res.status).toBe(200);
+            expect(body.data.quantity).toBe(150.5);
         });
 
         it("should return 400 if year/month not provided (0 values)", async () => {
@@ -176,30 +182,25 @@ describe("IssuanceRoutes", () => {
     // ─── CREATE ───────────────────────────────────────────────────────────────
 
     describe("POST /api/app/product-issuance", () => {
-        it("should return 201 on successful create", async () => {
-            // @ts-ignore
-            prisma.product.findUnique.mockResolvedValue({ id: 1, name: "T-Shirt" });
-            // @ts-ignore
-            prisma.productIssuance.findUnique.mockResolvedValue(null);
-            // @ts-ignore
-            prisma.productIssuance.create.mockResolvedValue({ id: 2 });
-
+        it("should return 200 on successful create", async () => {
             const res = await app.request("/api/app/product-issuance", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ product_id: 1, quantity: 150, month: 3, year: 2025 }),
             });
 
-            expect(res.status).toBe(201);
+            expect(res.status).toBe(200);
+            expect(prisma.productIssuance.upsert).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    where: { product_id_year_month_type: { product_id: 1, month: 3, year: 2025, type: "ALL" } },
+                    create: { product_id: 1, quantity: 150, month: 3, year: 2025, type: "ALL" },
+                }),
+            );
         });
 
-        it("should return 201 without month/year (uses current period)", async () => {
-            // @ts-ignore
-            prisma.product.findUnique.mockResolvedValue({ id: 1, name: "T-Shirt" });
-            // @ts-ignore
-            prisma.productIssuance.findUnique.mockResolvedValue(null);
-            // @ts-ignore
-            prisma.productIssuance.create.mockResolvedValue({ id: 2 });
+        it("should return 200 without month/year (uses previous month)", async () => {
+            const now = new Date();
+            const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
 
             const res = await app.request("/api/app/product-issuance", {
                 method: "POST",
@@ -207,7 +208,15 @@ describe("IssuanceRoutes", () => {
                 body: JSON.stringify({ product_id: 1, quantity: 150 }),
             });
 
-            expect(res.status).toBe(201);
+            expect(res.status).toBe(200);
+            expect(prisma.productIssuance.upsert).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    create: expect.objectContaining({
+                        month: prev.getUTCMonth() + 1,
+                        year: prev.getUTCFullYear(),
+                    }),
+                }),
+            );
         });
 
         it("should return 400 if required fields missing", async () => {
@@ -229,9 +238,6 @@ describe("IssuanceRoutes", () => {
         });
 
         it("should return 404 if product not found", async () => {
-            // @ts-ignore
-            prisma.product.findUnique.mockResolvedValue(null);
-
             const res = await app.request("/api/app/product-issuance", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -241,23 +247,30 @@ describe("IssuanceRoutes", () => {
 
             expect(res.status).toBe(404);
             expect(body.success).toBe(false);
+            expect(prisma.productIssuance.upsert).not.toHaveBeenCalled();
         });
 
-        it("should return 400 if issuance already exists for period", async () => {
-            // @ts-ignore
-            prisma.product.findUnique.mockResolvedValue({ id: 1, name: "T-Shirt" });
-            // @ts-ignore
-            prisma.productIssuance.findUnique.mockResolvedValue({ id: 1 });
-
+        it("should return 400 if type is not ALL for a period up to the threshold", async () => {
             const res = await app.request("/api/app/product-issuance", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ product_id: 1, quantity: 100, month: 3, year: 2025 }),
+                body: JSON.stringify({ product_id: 1, quantity: 100, month: 2, year: 2026, type: "ONLINE" }),
             });
             const body = await res.json();
 
             expect(res.status).toBe(400);
             expect(body.success).toBe(false);
+            expect(prisma.productIssuance.upsert).not.toHaveBeenCalled();
+        });
+
+        it("should return 200 if type is not ALL for a period after the threshold", async () => {
+            const res = await app.request("/api/app/product-issuance", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ product_id: 1, quantity: 100, month: 3, year: 2026, type: "ONLINE" }),
+            });
+
+            expect(res.status).toBe(200);
         });
     });
 
@@ -265,11 +278,6 @@ describe("IssuanceRoutes", () => {
 
     describe("PUT /api/app/product-issuance", () => {
         it("should return 200 on successful update", async () => {
-            // @ts-ignore
-            prisma.productIssuance.findUnique.mockResolvedValue({ id: 1, product_id: 1, month: 3, year: 2025 });
-            // @ts-ignore
-            prisma.productIssuance.update.mockResolvedValue({ id: 1, quantity: 200 });
-
             const res = await app.request("/api/app/product-issuance", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
@@ -277,12 +285,12 @@ describe("IssuanceRoutes", () => {
             });
 
             expect(res.status).toBe(200);
+            expect(prisma.productIssuance.upsert).toHaveBeenCalledWith(
+                expect.objectContaining({ update: { quantity: 200 } }),
+            );
         });
 
-        it("should return 404 if issuance record not found", async () => {
-            // @ts-ignore
-            prisma.productIssuance.findUnique.mockResolvedValue(null);
-
+        it("should return 404 if product not found", async () => {
             const res = await app.request("/api/app/product-issuance", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
@@ -294,14 +302,60 @@ describe("IssuanceRoutes", () => {
             expect(body.success).toBe(false);
         });
 
-        it("should return 400 if month/year not provided", async () => {
+        it("should return 200 without month/year (uses previous month)", async () => {
             const res = await app.request("/api/app/product-issuance", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ product_id: 1, quantity: 100 }),
             });
-            // @ts-ignore
-            expect([400, 404]).toContain(res.status); // validasi di service level
+
+            expect(res.status).toBe(200);
+        });
+    });
+
+    // ─── EXPORT ───────────────────────────────────────────────────────────────
+
+    describe("GET /api/app/product-issuance/export", () => {
+        it("should return a CSV with all rows, not the detail handler", async () => {
+            (prisma.$queryRaw as any)
+                .mockResolvedValueOnce([{ total: 1 }])
+                .mockResolvedValueOnce([{
+                    id: 1, code: "TSHIRT", name: "T-Shirt", size_val: 40, unit_name: "pcs",
+                    pt_id: 1, pt_name: "Apparel", pt_slug: "apparel",
+                    totalQuantity: "150",
+                    issuances_data: "[]",
+                }]);
+
+            const res = await app.request("/api/app/product-issuance/export?horizon=2", { method: "GET" });
+            const text = await res.text();
+            const [header, row] = text.trim().split("\n");
+
+            expect(res.status).toBe(200);
+            expect(res.headers.get("Content-Type")).toContain("text/csv");
+            expect(res.headers.get("Content-Disposition")).toContain("data-pengeluaran.csv");
+            expect(header).toMatch(/^No,Kode,Nama Produk,Tipe,Size,\d{4}-\d{2},\d{4}-\d{2},Total$/);
+            expect(row).toContain("TSHIRT");
+        });
+    });
+
+    describe("GET /api/app/product-issuance/rekap/export", () => {
+        it("should return a CSV with the channel columns", async () => {
+            (prisma.$queryRaw as any)
+                .mockResolvedValueOnce([{ total: 1 }])
+                .mockResolvedValueOnce([{
+                    id: 1, code: "TSHIRT", name: "T-Shirt", size_val: 40, unit_name: "pcs",
+                    pt_name: "Apparel", offline: 10, online: 20, spin_wheel: 0,
+                    garansi_out: 1, b2b: 5, total_qty: 36,
+                }]);
+
+            const res = await app.request("/api/app/product-issuance/rekap/export?month=3&year=2026", { method: "GET" });
+            const text = await res.text();
+            const [header, row] = text.trim().split("\n");
+
+            expect(res.status).toBe(200);
+            expect(res.headers.get("Content-Disposition")).toContain("rekap-pengeluaran.csv");
+            expect(header).toBe("No,Kode,Nama Produk,Tipe,Size,Offline,Online,Spin Wheel,Garansi Out,B2B,Total");
+            expect(row).toBe("1,TSHIRT,T-Shirt,Apparel,40 pcs,10,20,0,1,5,36");
         });
     });
 });
