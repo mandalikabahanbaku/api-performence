@@ -2,6 +2,7 @@ import prisma from "../../../config/prisma.js";
 import { Prisma, IssuanceType, Trend } from "../../../generated/prisma/client.js";
 import { ApiError } from "../../../lib/errors/api.error.js";
 import { GetPagination } from "../../../lib/utils/pagination.js";
+import ExcelJS from "exceljs";
 
 import { QueryIssuanceDTO, RequestIssuanceDTO, ResponseIssuanceDTO, QueryIssuanceRekapDTO } from "./issuance.schema.js";
 
@@ -267,12 +268,16 @@ export class IssuanceService {
             ${typeSql}
         `);
 
-        if (!issuanceRows[0] || (issuanceRows[0].others_sum === 0 && issuanceRows[0].all_val === 0)) {
+        // SUM of a numeric column comes back as Prisma Decimal, so convert before compare
+        const stats = issuanceRows[0];
+        const othersSum = Number(stats?.others_sum ?? 0);
+        const allVal = Number(stats?.all_val ?? 0);
+
+        if (!stats || (othersSum === 0 && allVal === 0)) {
             throw new ApiError(404, "Data pengeluaran tidak ditemukan");
         }
 
-        const stats = issuanceRows[0];
-        const finalQuantity = stats.others_sum > 0 ? stats.others_sum : stats.all_val;
+        const finalQuantity = othersSum > 0 ? othersSum : allVal;
 
         // Fetch basic info from product
         const product = await prisma.product.findUniqueOrThrow({
@@ -404,6 +409,80 @@ export class IssuanceService {
             })),
             len: total
         };
+    }
+
+    static async export(query: QueryIssuanceDTO) {
+        const { issuances } = await this.list({ ...query, take: 1000000, page: 1 });
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet("Data Pengeluaran");
+
+        const periods = issuances[0]?.quantity ?? this.getLastNMonths((query.horizon ?? 6) || 13);
+        const periodKey = (p: { year: number; month: number }) =>
+            `${p.year}-${String(p.month).padStart(2, "0")}`;
+
+        sheet.columns = [
+            { header: "No", key: "no" },
+            { header: "Kode", key: "code" },
+            { header: "Nama Produk", key: "name" },
+            { header: "Tipe", key: "type" },
+            { header: "Size", key: "size" },
+            ...periods.map((p) => ({ header: periodKey(p), key: periodKey(p) })),
+            { header: "Total", key: "total" },
+        ];
+
+        issuances.forEach((item, index) => {
+            sheet.addRow({
+                no: index + 1,
+                code: item.product.code || "-",
+                name: item.product.name,
+                type: item.product.product_type?.name || "-",
+                size: item.product.size || "-",
+                ...Object.fromEntries(item.quantity.map((q) => [periodKey(q), q.quantity])),
+                total: item.totalQuantity,
+            });
+        });
+
+        return await workbook.csv.writeBuffer();
+    }
+
+    static async exportRekap(query: QueryIssuanceRekapDTO) {
+        const { rekap } = await this.rekap({ ...query, take: 1000000, page: 1 });
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet("Rekap Pengeluaran");
+
+        sheet.columns = [
+            { header: "No", key: "no" },
+            { header: "Kode", key: "code" },
+            { header: "Nama Produk", key: "name" },
+            { header: "Tipe", key: "type" },
+            { header: "Size", key: "size" },
+            { header: "Offline", key: "offline" },
+            { header: "Online", key: "online" },
+            { header: "Spin Wheel", key: "spin_wheel" },
+            { header: "Garansi Out", key: "garansi_out" },
+            { header: "B2B", key: "b2b" },
+            { header: "Total", key: "total_qty" },
+        ];
+
+        rekap.forEach((item, index) => {
+            sheet.addRow({
+                no: index + 1,
+                code: item.product.code || "-",
+                name: item.product.name,
+                type: item.product.product_type || "-",
+                size: item.product.size || "-",
+                offline: item.offline,
+                online: item.online,
+                spin_wheel: item.spin_wheel,
+                garansi_out: item.garansi_out,
+                b2b: item.b2b,
+                total_qty: item.total_qty,
+            });
+        });
+
+        return await workbook.csv.writeBuffer();
     }
 
     private static calculateTrendSeries(values: number[], threshold = 5): Trend[] {
